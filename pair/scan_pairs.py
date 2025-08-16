@@ -2,7 +2,6 @@ import argparse
 import csv
 from itertools import combinations
 
-import pandas as pd
 from statsmodels.tsa.stattools import coint
 
 from market_utils import load_market_data, align_contract_series
