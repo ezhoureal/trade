@@ -1,23 +1,7 @@
 import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
-
-# === Step 1: Load Data from Excel ===
-# Replace with your Excel filename
-file = "all_2024.11.xlsx"
-df = pd.read_excel(file)
-print(df[:3])
-
-# Example: compare two contracts by 'Close' or 'Settle'
-# You may need to filter by contract code if multiple exist in one file
-
-# Let's say Contract A = first contract, Contract B = second contract
-# Adjust depending on how your Excel is structured
-import pandas as pd
-import statsmodels.api as sm
-from statsmodels.tsa.stattools import coint
 from typing import Optional
-
 
 def load_market_data(filepath: str) -> pd.DataFrame:
     """Robustly load the Excel file and normalize column names.
@@ -98,6 +82,47 @@ def load_market_data(filepath: str) -> pd.DataFrame:
 
     return df
 
+
+def align_contract_series(df: pd.DataFrame, a_code: str, b_code: str, price_col: str):
+    """Return two aligned Series (A, B) for the given contract codes.
+
+    Aligns on parsed Date (inner join). If no overlapping dates are found
+    or Date cannot be parsed, falls back to positional alignment (trim to min length).
+    """
+    # coerce price column to numeric and drop rows where not numeric
+    df = df.copy()
+    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+    df = df.dropna(subset=[price_col, "Contract"])  # require both
+
+    if "Date" in df.columns:
+        a_df = df[df["Contract"] == a_code][["Date", price_col]].copy()
+        b_df = df[df["Contract"] == b_code][["Date", price_col]].copy()
+
+        # try to parse Date to datetime (handles YYYYMMDD integers or strings)
+        a_df["Date"] = pd.to_datetime(a_df["Date"], errors="coerce")
+        b_df["Date"] = pd.to_datetime(b_df["Date"], errors="coerce")
+
+        # drop rows with invalid dates or prices
+        a_df = a_df.dropna(subset=["Date", price_col])
+        b_df = b_df.dropna(subset=["Date", price_col])
+
+        # set Date as index and rename price columns
+        a_series = a_df.set_index("Date")[price_col].rename("A")
+        b_series = b_df.set_index("Date")[price_col].rename("B")
+
+        # inner join on Date to keep only dates present in both
+        merged = a_series.to_frame().join(b_series.to_frame(), how="inner")
+
+        if merged.empty:
+            # no overlapping dates -> signal caller by returning empty list
+            return None
+        else:
+            print(f"Found {len(merged)} overlapping trading dates for {a_code} and {b_code}")
+            return merged["A"], merged["B"]
+    else:
+        # no Date column -> signal caller by returning empty list
+        return None
+
 def main(filepath: str = "all_2024.11.xlsx", contract_code_a: Optional[str] = None, contract_code_b: Optional[str] = None, price_col_override: Optional[str] = None):
     file = filepath
     df = load_market_data(file)
@@ -136,18 +161,12 @@ def main(filepath: str = "all_2024.11.xlsx", contract_code_a: Optional[str] = No
         raise KeyError("Neither 'Settle' nor 'Close' column found after normalization. Columns: " + str(df.columns.tolist()))
 
     print(f"Using price column: {price_col}")
-
-    # coerce price column to numeric and drop rows where not numeric
-    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
-    df = df.dropna(subset=[price_col, "Contract"])  # require both
-
-    contractA = df[df["Contract"] == contract_code_a][price_col].reset_index(drop=True)
-    contractB = df[df["Contract"] == contract_code_b][price_col].reset_index(drop=True)
-
-    # align lengths
-    min_len = min(len(contractA), len(contractB))
-    contractA = contractA[:min_len]
-    contractB = contractB[:min_len]
+    # align the two contract series by Date (inner join)
+    aligned = align_contract_series(df, contract_code_a, contract_code_b, price_col)
+    if not aligned:
+        print(f"No overlapping trading dates found for {contract_code_a} and {contract_code_b}; aborting test.")
+        return
+    contractA, contractB = aligned
 
     # cointegration test
     score, pvalue, _ = coint(contractA, contractB)
