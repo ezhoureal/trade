@@ -69,6 +69,16 @@ def load_market_data(filepath: str) -> pd.DataFrame:
     if new_cols:
         df = df.rename(columns=new_cols)
 
+    # Excel often uses merged cells for grouped rows (e.g. Contract value
+    # appears once and the following rows are blank). Forward-fill the
+    # normalized 'Contract' column so every row has the correct contract id.
+    if "Contract" in df.columns:
+        # Replace empty strings with NaN first so ffill works reliably
+        df.loc[:, "Contract"] = df["Contract"].replace("", pd.NA)
+        df.loc[:, "Contract"] = df["Contract"].ffill()
+
+    # Strip whitespace from object columns (do this after ffill so NaNs
+    # are preserved until conversion to string)
     for col in df.select_dtypes(include=[object]).columns:
         df[col] = df[col].astype(str).str.strip()
 
