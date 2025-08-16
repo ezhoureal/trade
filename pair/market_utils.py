@@ -1,14 +1,12 @@
 import pandas as pd
+from pathlib import Path
 from typing import Optional, Tuple
 
-def load_market_data(filepath: str) -> pd.DataFrame:
-    """Robustly load the Excel file and normalize column names.
-
-    Handles files with title rows above the real header. Detects header
-    by scanning the first 10 rows for expected keywords (Chinese/English).
-    Normalizes common column names to English equivalents used elsewhere.
+def detect_excel_header(filepath: str, nrows: int = 10) -> Optional[int]:
+    """Scan the first `nrows` of an Excel file and return the header row index
+    if a likely header is found (based on keywords), otherwise return None.
     """
-    preview = pd.read_excel(filepath, header=None, nrows=10)
+    preview = pd.read_excel(filepath, header=None, nrows=nrows)
 
     keywords = [
         "合约",
@@ -29,7 +27,22 @@ def load_market_data(filepath: str) -> pd.DataFrame:
             continue
         if any(any(k in cell for cell in cells) for k in keywords):
             header_row = i
+            break
 
+    return header_row
+
+def load_parquet(filepath: str = "data/combined.parquet") -> pd.DataFrame:
+    """Load a Parquet file into a DataFrame."""
+    return pd.read_parquet(filepath)
+
+def load_excel(filepath: str) -> pd.DataFrame:
+    """Robustly load the Excel file and normalize column names.
+
+    Handles files with title rows above the real header. Detects header
+    by scanning the first 10 rows for expected keywords (Chinese/English).
+    Normalizes common column names to English equivalents used elsewhere.
+    """
+    header_row = detect_excel_header(filepath, nrows=10)
     if header_row is None:
         df = pd.read_excel(filepath)
     else:

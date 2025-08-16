@@ -3,10 +3,10 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
 from typing import Optional
 
-from market_utils import load_market_data, align_contract_series
+from market_utils import load_excel, align_contract_series
 
 def main(filepath: str, contract_code_a: Optional[str] = None, contract_code_b: Optional[str] = None, price_col_override: Optional[str] = None):
-    df = load_market_data(filepath)
+    df = load_excel(filepath)
 
     print("Columns after normalization:", df.columns.tolist())
     print(df.head(3))

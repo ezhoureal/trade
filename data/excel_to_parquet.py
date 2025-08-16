@@ -13,7 +13,7 @@ from typing import List
 
 import pandas as pd
 
-from pair.market_utils import load_market_data
+from pair.market_utils import load_excel
 
 
 logger = logging.getLogger("excel_to_parquet")
@@ -33,7 +33,7 @@ def concat_excels(src_dir: Path, pattern: str = "*.xls*", add_source: bool = Tru
     for f in files:
         logger.info("Loading %s", f)
         try:
-            df = load_market_data(str(f))
+            df = load_excel(str(f))
         except Exception as e:  # keep robust: log and continue
             logger.exception("Failed to load %s: %s", f, e)
             continue
