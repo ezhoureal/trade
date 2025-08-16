@@ -5,7 +5,7 @@ from typing import Optional
 
 from market_utils import load_market_data, align_contract_series
 
-def main(filepath: str = "all_2024.11.xlsx", contract_code_a: Optional[str] = None, contract_code_b: Optional[str] = None, price_col_override: Optional[str] = None):
+def main(filepath: str, contract_code_a: Optional[str] = None, contract_code_b: Optional[str] = None, price_col_override: Optional[str] = None):
     df = load_market_data(filepath)
 
     print("Columns after normalization:", df.columns.tolist())
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run cointegration test between two contracts in an Excel report")
-    parser.add_argument("--file", "-f", default="all_2024.11.xlsx", help="Excel file to load")
+    parser.add_argument("--file", "-f", default="data/all_2024.11.xlsx", help="Excel file to load")
     parser.add_argument("--a", help="Contract code for series A (e.g. ag2412)")
     parser.add_argument("--b", help="Contract code for series B (e.g. ag2413)")
     parser.add_argument("--price", choices=["Settle", "Close"], help="Price column to use (Settle or Close)")

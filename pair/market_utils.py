@@ -1,7 +1,6 @@
 import pandas as pd
 from typing import Optional, Tuple
 
-
 def load_market_data(filepath: str) -> pd.DataFrame:
     """Robustly load the Excel file and normalize column names.
 

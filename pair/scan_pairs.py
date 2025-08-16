@@ -5,7 +5,7 @@ from itertools import combinations
 import pandas as pd
 from statsmodels.tsa.stattools import coint
 
-from backtrader.market_utils import load_market_data, align_contract_series
+from market_utils import load_market_data, align_contract_series
 def scan(filepath: str, price_col: str = None, alpha: float = 0.05, minobs: int = 30, out: str = None):
     df = load_market_data(filepath)
 
