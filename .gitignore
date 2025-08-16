@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 *.xlsx
+*.xls
 *.csv
 *.parquet
 
