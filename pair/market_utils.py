@@ -2,12 +2,6 @@ import pandas as pd
 from typing import Optional, Tuple
 
 def load_excel(filepath: str) -> pd.DataFrame:
-    """Robustly load the Excel file and normalize column names.
-
-    Handles files with title rows above the real header. Detects header
-    by scanning the first 10 rows for expected keywords (Chinese/English).
-    Normalizes common column names to English equivalents used elsewhere.
-    """
     df = pd.read_excel(filepath, header=3)
     df = df.dropna(axis=1, how="all")
 
@@ -20,6 +14,9 @@ def load_excel(filepath: str) -> pd.DataFrame:
         df.loc[:, "Contract"] = df["Contract"].ffill()
 
     df = df.dropna(axis=0, how="any")  # also drop empty rows
+    # Filter out option contracts (those containing 'P' or 'C')
+    if "Contract" in df.columns:
+        df = df[~df["Contract"].str.contains(r'[PC]', na=False)]
     
     # Convert date column to int if it exists and has decimal values
     df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d')
