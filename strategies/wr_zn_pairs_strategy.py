@@ -92,26 +92,24 @@ cerebro.adddata(data1, name='zn2504')
 cerebro.adddata(data2, name='wr2501')
 
 cerebro.addstrategy(PairTradingStrategy)
-# cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
-# cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0)
-# cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0)
+cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
 
 # Get analyzer results
-result = cerebro.run()
+strat = cerebro.run()[0]
 
-# strat = result[0]
+# --- Logging ---
+total_trades = strat.analyzers.trades.get_analysis().total.closed if hasattr(strat.analyzers.trades.get_analysis().total, 'closed') else strat.analyzers.trades.get_analysis().total
+print(f'Total closed trades: {total_trades}')
 
-# # --- Logging ---
-# total_trades = strat.analyzers.trades.get_analysis().total.closed if hasattr(strat.analyzers.trades.get_analysis().total, 'closed') else strat.analyzers.trades.get_analysis().total
-# print(f'Total closed trades: {total_trades}')
+# Total return
+returns = strat.analyzers.returns.get_analysis()
+total_return = returns.get('rtot', None)
+if total_return is None:  # fallback
+    total_return = strat.broker.getvalue() - cerebro.broker.startingcash
+print(f'Total return: {total_return:.2f}')
 
-# # Total return
-# returns = strat.analyzers.returns.get_analysis()
-# total_return = returns.get('rtot', None)
-# if total_return is None:  # fallback
-#     total_return = strat.broker.getvalue() - cerebro.broker.startingcash
-# print(f'Total return: {total_return:.2f}')
-
-# # Sharpe ratio
-# sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', None)
-# print(f'Sharpe ratio: {sharpe:.2f}')
+# Sharpe ratio
+sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', None)
+print(f'Sharpe ratio: {sharpe:.2f}')
