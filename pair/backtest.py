@@ -129,6 +129,9 @@ def run_strategy(contract1: str, contract2: str, data: pd.DataFrame,
         'total_return': returns.get('rtot', 0.0),
         'sharpe_ratio': sharpe.get('sharperatio', 0.0),
         'total_trades': trades.total.total,
+        'winning_trades': trades.won.total,
+        'losing_trades': trades.lost.total,
+        'win_rate': trades.won.total / trades.total.total if trades.total.total > 0 else 0.0,
     }
 
 def main():

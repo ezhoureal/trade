@@ -115,6 +115,7 @@ def run_all_pairs(data_dir: str, pairs_csv: str, max_pairs: int = None,
 
             try:
                 result = future.result()
+                result.update({"contract_pair": f'{contract1} - {contract2}'})
                 results.append(result)
                 print(f"✅ Success: Return={result['total_return']:.2f}, "
                         f"Sharpe={result['sharpe_ratio']:.2f}, "
@@ -123,6 +124,8 @@ def run_all_pairs(data_dir: str, pairs_csv: str, max_pairs: int = None,
                 print(f"❌ Error processing pair: {contract1} vs {contract2}")
                 print(f"   {e}")
 
+    # Sort results by Sharpe ratio in descending order
+    results.sort(key=lambda x: x['sharpe_ratio'], reverse=True)
     if results_file:
         save_results(results, results_file)
     
@@ -136,8 +139,8 @@ def save_results(results: List[dict], filename: str):
         print("No results to save")
         return
     
-    fieldnames = ['contract1', 'contract2', 'pvalue', 'total_return', 'sharpe_ratio', 
-                  'total_trades', 'winning_trades', 'losing_trades', 'win_rate', 'error']
+    fieldnames = ['contract_pair', 'total_return', 'sharpe_ratio', 
+                  'total_trades', 'winning_trades', 'losing_trades', 'win_rate']
     
     with open(filename, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -172,7 +175,7 @@ def print_summary(results: List[dict]):
     best_pairs = results[:10]
     print(f"\nTop 10 Best Performing Pairs:")
     for i, pair in enumerate(best_pairs, 1):
-        print(f"  {i:2d}. {pair['contract1']}-{pair['contract2']}: "
+        print(f"  {i:2d}. {pair['contract_pair']}: "
                 f"Return={pair['total_return']:.2f}, "
                 f"Sharpe={pair['sharpe_ratio']:.2f}, "
                 f"Trades={pair['total_trades']}")
@@ -186,7 +189,7 @@ def main():
         epilog="""
 Examples:
   python run_all_pairs.py
-  python run_all_pairs.py --max-pairs 50 --results results.csv
+  python run_all_pairs.py --max-pairs 50 -o results.csv
   python run_all_pairs.py --data-dir data --lookback 30 --entry-z 2.5
   python run_all_pairs.py --workers 4 --max-pairs 100
         """
@@ -204,7 +207,7 @@ Examples:
                        help='Z-score threshold for entry (default: 2.0)')
     parser.add_argument('--exit-z', '-x', type=float, default=0.5,
                        help='Z-score threshold for exit (default: 0.5)')
-    parser.add_argument('--results', '-r', type=str,
+    parser.add_argument('--out', '-o', type=str,
                        help='Output CSV file for results (optional)')
     parser.add_argument('--workers', '-w', type=int,
                        help='Number of worker processes (default: auto-detect based on CPU cores)')
@@ -217,7 +220,7 @@ Examples:
         lookback=args.lookback,
         entry_z=args.entry_z,
         exit_z=args.exit_z,
-        results_file=args.results,
+        results_file=args.out,
         n_workers=args.workers
     )
 
