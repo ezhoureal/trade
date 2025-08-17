@@ -44,9 +44,6 @@ def align_contract_series(df: pd.DataFrame, a_code: str, b_code: str, price_col:
     a_df = df[df["Contract"] == a_code][["Date", price_col]].copy()
     b_df = df[df["Contract"] == b_code][["Date", price_col]].copy()
 
-    a_df["Date"] = pd.to_datetime(a_df["Date"], errors="coerce")
-    b_df["Date"] = pd.to_datetime(b_df["Date"], errors="coerce")
-
     a_df = a_df.dropna(subset=["Date", price_col])
     b_df = b_df.dropna(subset=["Date", price_col])
 
