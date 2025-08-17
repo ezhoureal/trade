@@ -27,7 +27,7 @@ def concat_excels(src_dir: Path, year: int) -> pd.DataFrame:
         dfs.append(df)
 
     combined = pd.concat(dfs, ignore_index=True, sort=False)
-    print(f'top 20 = {combined.head(20)}')
+    print(f'{combined}')
     return combined
 
 

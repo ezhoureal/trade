@@ -10,7 +10,6 @@ def load_excel(filepath: str) -> pd.DataFrame:
     """
     df = pd.read_excel(filepath, header=3)
     df = df.dropna(axis=1, how="all")
-    df = df.dropna(axis=0, how="any")  # also drop empty rows
 
     # Excel often uses merged cells for grouped rows (e.g. Contract value
     # appears once and the following rows are blank). Forward-fill the
@@ -19,10 +18,11 @@ def load_excel(filepath: str) -> pd.DataFrame:
         # Replace empty strings with NaN first so ffill works reliably
         df.loc[:, "Contract"] = df["Contract"].replace("", pd.NA)
         df.loc[:, "Contract"] = df["Contract"].ffill()
+
+    df = df.dropna(axis=0, how="any")  # also drop empty rows
     
     # Convert date column to int if it exists and has decimal values
-    if "Date" in df.columns and df["Date"].dtype == float:
-        df["Date"] = df["Date"].astype(int)
+    df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d')
     # Strip whitespace from object columns (do this after ffill so NaNs
     # are preserved until conversion to string)
     for col in df.select_dtypes(include=[object]).columns:
