@@ -51,15 +51,7 @@ def main(argv: List[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     src = Path(args.dir)
-    if not src.exists():
-        logger.error("Source directory %s does not exist", src)
-        return 2
-
     combined = concat_excels(src, year=args.year)
-    if combined.empty:
-        logger.error("No data to write. Exiting.")
-        return 3
-
     write_parquet(combined, out_path=Path(f'data/{args.year}.parquet'))
     return 0
 
