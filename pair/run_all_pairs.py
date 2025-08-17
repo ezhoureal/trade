@@ -11,6 +11,8 @@ import glob
 import os
 import sys
 from typing import List, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
 
 import pandas as pd
 
@@ -55,10 +57,9 @@ def load_pairs_from_csv(csv_file: str, max_pairs: int = None) -> List[Tuple[str,
     print(f"Loaded {len(pairs)} pairs from {csv_file}")
     return pairs
 
-
 def run_all_pairs(data_dir: str, pairs_csv: str, max_pairs: int = None,
                   lookback: int = 20, entry_z: float = 2.0, exit_z: float = 0.5,
-                  results_file: str = None):
+                  results_file: str = None, n_workers: int = None):
     """Run pairs trading strategy on all pairs from the CSV file."""
     
     # Load concatenated data
@@ -79,43 +80,49 @@ def run_all_pairs(data_dir: str, pairs_csv: str, max_pairs: int = None,
         print("No pairs to process")
         return
     
+    # Set number of workers
+    if n_workers is None:
+        n_workers = min(cpu_count(), len(pairs))
+    
     # Results storage
     results = []
     
-    print(f"\nRunning strategy on {len(pairs)} pairs...")
+    print(f"\nRunning strategy on {len(pairs)} pairs using {n_workers} workers...")
     print(f"Strategy parameters: lookback={lookback}, entry_z={entry_z}, exit_z={exit_z}")
     print("=" * 80)
     
-    for i, (contract1, contract2, pvalue) in enumerate(pairs, 1):
-        print(f"\n[{i}/{len(pairs)}] Processing pair: {contract1} vs {contract2} (p-value: {pvalue:.2e})")
-        
-        try:
-            result_data = run_strategy(
-                contract1=contract1,
-                contract2=contract2,
-                data=data,
-                lookback=lookback,
-                entry_z=entry_z,
-                exit_z=exit_z
-            )
-            # Store successful results
-            result = {
-                'contract1': contract1,
-                'contract2': contract2,
-                'pvalue': pvalue,
-                **result_data
-            }
-            results.append(result)
-            
-            print(f"✅ Success: Return={result_data['total_return']:.2f}, "
-                    f"Sharpe={result_data['sharpe_ratio']:.2f}, "
-                    f"Trades={result_data['total_trades']}")
-                
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            continue
+    # Prepare arguments for worker processes
+    worker_args = [
+        (contract1, contract2, data, lookback, entry_z, exit_z)
+        for contract1, contract2, pvalue in pairs
+    ]
     
-    # Save results if requested
+    # Process pairs in parallel
+    completed_count = 0
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all jobs
+        future_to_pair = {
+            executor.submit(run_strategy, *args): (args[0], args[1])
+            for args in worker_args
+        }
+        
+        # Process completed futures
+        for future in as_completed(future_to_pair):
+            contract1, contract2 = future_to_pair[future]
+            completed_count += 1
+
+            print(f"\n[{completed_count}/{len(pairs)}] Processing pair: {contract1} vs {contract2}")
+
+            try:
+                result = future.result()
+                results.append(result)
+                print(f"✅ Success: Return={result['total_return']:.2f}, "
+                        f"Sharpe={result['sharpe_ratio']:.2f}, "
+                        f"Trades={result['total_trades']}")
+            except Exception as e:
+                print(f"❌ Error processing pair: {contract1} vs {contract2}")
+                print(f"   {e}")
+
     if results_file:
         save_results(results, results_file)
     
@@ -146,39 +153,29 @@ def print_summary(results: List[dict]):
         print("\nNo results to summarize")
         return
     
-    successful = [r for r in results if r.get('total_return') is not None]
-    failed = [r for r in results if r.get('total_return') is None]
-    
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
     print(f"Total pairs processed: {len(results)}")
-    print(f"Successful runs: {len(successful)}")
-    print(f"Failed runs: {len(failed)}")
+
+    returns = [r['total_return'] for r in results]
+    sharpes = [r['sharpe_ratio'] for r in results]
+
+    print(f"\nReturn Statistics:")
+    # print(f"  Mean return: {sum(returns) / len(returns):.2f}")
+    print(f"  Positive returns: {len([r for r in returns if r > 0])}/{len(returns)}")
     
-    if successful:
-        returns = [r['total_return'] for r in successful]
-        sharpes = [r['sharpe_ratio'] for r in successful if r['sharpe_ratio'] is not None]
-        
-        print(f"\nReturn Statistics:")
-        # print(f"  Mean return: {sum(returns) / len(returns):.2f}")
-        print(f"  Best return: {max(returns):.2f}")
-        print(f"  Worst return: {min(returns):.2f}")
-        print(f"  Positive returns: {len([r for r in returns if r > 0])}/{len(returns)}")
-        
-        if sharpes:
-            print(f"\nSharpe Ratio Statistics:")
-            print(f"  Mean Sharpe: {sum(sharpes) / len(sharpes):.2f}")
-            print(f"  Best Sharpe: {max(sharpes):.2f}")
-        
-        # Top 10 best performing pairs
-        best_pairs = sorted(successful, key=lambda x: x['total_return'], reverse=True)[:10]
-        print(f"\nTop 10 Best Performing Pairs:")
-        for i, pair in enumerate(best_pairs, 1):
-            print(f"  {i:2d}. {pair['contract1']}-{pair['contract2']}: "
-                  f"Return={pair['total_return']:.2f}, "
-                  f"Sharpe={pair['sharpe_ratio']:.2f}, "
-                  f"Trades={pair['total_trades']}")
+    print(f"\nSharpe Ratio Statistics:")
+    print(f"  Best Sharpe: {max(sharpes):.2f}")
+    
+    # Top 10 best performing pairs
+    best_pairs = results[:10]
+    print(f"\nTop 10 Best Performing Pairs:")
+    for i, pair in enumerate(best_pairs, 1):
+        print(f"  {i:2d}. {pair['contract1']}-{pair['contract2']}: "
+                f"Return={pair['total_return']:.2f}, "
+                f"Sharpe={pair['sharpe_ratio']:.2f}, "
+                f"Trades={pair['total_trades']}")
 
 
 def main():
@@ -191,6 +188,7 @@ Examples:
   python run_all_pairs.py
   python run_all_pairs.py --max-pairs 50 --results results.csv
   python run_all_pairs.py --data-dir data --lookback 30 --entry-z 2.5
+  python run_all_pairs.py --workers 4 --max-pairs 100
         """
     )
     
@@ -208,6 +206,8 @@ Examples:
                        help='Z-score threshold for exit (default: 0.5)')
     parser.add_argument('--results', '-r', type=str,
                        help='Output CSV file for results (optional)')
+    parser.add_argument('--workers', '-w', type=int,
+                       help='Number of worker processes (default: auto-detect based on CPU cores)')
     
     args = parser.parse_args()
     run_all_pairs(
@@ -217,7 +217,8 @@ Examples:
         lookback=args.lookback,
         entry_z=args.entry_z,
         exit_z=args.exit_z,
-        results_file=args.results
+        results_file=args.results,
+        n_workers=args.workers
     )
 
 if __name__ == "__main__":
