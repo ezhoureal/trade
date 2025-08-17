@@ -6,9 +6,6 @@ import os
 import pandas as pd
 from statsmodels.tsa.stattools import coint
 
-from market_utils import load_parquet
-
-
 def build_contract_series(df: pd.DataFrame, price_col: str):
     """Build a dict mapping contract -> price Series indexed by Date."""
     if "Date" not in df.columns:
@@ -51,17 +48,16 @@ def _pair_task(a: str, b: str, a_ser: pd.Series, b_ser: pd.Series, minobs: int, 
         print(f'coint failed: {a}, {b}, {e}')
     return None
 
-def scan(filepath: str = "data/combined.parquet", price_col: str = None,
-         alpha: float = 0.05, minobs: int = 30):
-    df = load_parquet(filepath)
+def scan(filepath: str, price_col: str,
+         alpha: float, minobs: int, out: str):
+    df = pd.read_parquet(filepath)
 
     # basic contract filtering (contracts like ABCD2025)
     contract_mask = df["Contract"].str.match(r"^[A-Za-z]+\d{4}$", na=False)
     df = df[contract_mask]
 
-    if price_col is None:
-        price_col = "Settle" if "Settle" in df.columns else ("Close" if "Close" in df.columns else None)
-    if price_col is None:
+    if price_col not in df.columns:
+        print(f'columns = {df.columns}')
         raise KeyError("Could not detect a price column (Settle/Close)")
 
     workers = os.cpu_count() or 1
@@ -95,19 +91,20 @@ def scan(filepath: str = "data/combined.parquet", price_col: str = None,
 
     if results:
         keys = ["A", "B", "pvalue", "stat", "nobs"]
-        with open("data/pairs_coint.csv", "w", newline="") as f:
+        with open(out, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
             for r in results:
                 writer.writerow(r)
-        print(f"Wrote results to data/pairs_coint.csv")
+        print(f"Wrote results to {out}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scan all contract pairs for cointegration")
-    parser.add_argument("--file", "-f", default="data/combined.parquet")
-    parser.add_argument("--price", choices=["Settle", "Close"], default=None)
+    parser.add_argument("--file", "-f", default="data/2024.parquet")
+    parser.add_argument("--price", choices=["Settle", "Close"], default="Close")
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--minobs", type=int, default=20)
+    parser.add_argument("--out", "-o", type=str, default="data/pairs_coint.csv")
 
     args = parser.parse_args()
-    scan(args.file, price_col=args.price, alpha=args.alpha, minobs=args.minobs)
+    scan(args.file, price_col=args.price, alpha=args.alpha, minobs=args.minobs, out=args.out)

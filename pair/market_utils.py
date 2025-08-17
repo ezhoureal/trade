@@ -1,39 +1,5 @@
 import pandas as pd
-from pathlib import Path
 from typing import Optional, Tuple
-
-def detect_excel_header(filepath: str, nrows: int = 10) -> Optional[int]:
-    """Scan the first `nrows` of an Excel file and return the header row index
-    if a likely header is found (based on keywords), otherwise return None.
-    """
-    preview = pd.read_excel(filepath, header=None, nrows=nrows)
-
-    keywords = [
-        "合约",
-        "Contract",
-        "结算",
-        "结算价",
-        "Settle",
-        "收盘",
-        "收盘价",
-        "交易日期",
-        "Date",
-    ]
-
-    header_row: Optional[int] = None
-    for i, row in preview.iterrows():
-        cells = [str(x).strip() for x in row.values if pd.notna(x)]
-        if not cells:
-            continue
-        if any(any(k in cell for cell in cells) for k in keywords):
-            header_row = i
-            break
-
-    return header_row
-
-def load_parquet(filepath: str = "data/combined.parquet") -> pd.DataFrame:
-    """Load a Parquet file into a DataFrame."""
-    return pd.read_parquet(filepath)
 
 def load_excel(filepath: str) -> pd.DataFrame:
     """Robustly load the Excel file and normalize column names.
@@ -42,45 +8,9 @@ def load_excel(filepath: str) -> pd.DataFrame:
     by scanning the first 10 rows for expected keywords (Chinese/English).
     Normalizes common column names to English equivalents used elsewhere.
     """
-    header_row = detect_excel_header(filepath, nrows=10)
-    if header_row is None:
-        df = pd.read_excel(filepath)
-    else:
-        df = pd.read_excel(filepath, header=header_row)
-
+    df = pd.read_excel(filepath, header=3)
     df = df.dropna(axis=1, how="all")
-
-    rename_map = {
-        "合约": "Contract",
-        "所内合约行情报表": "Contract",
-        "Contract": "Contract",
-        "交易日期": "Date",
-        "Date": "Date",
-        "结算价": "Settle",
-        "结算": "Settle",
-        "Settle": "Settle",
-        "收盘价": "Close",
-        "收盘": "Close",
-        "前收盘": "pre close",
-        "前结算": "Pre settle",
-        "持仓量": "OI",
-        "成交量": "Volume",
-        "成交金额(万元)": "Amount",
-    }
-
-    new_cols = {}
-    for c in df.columns:
-        cstr = str(c).strip()
-        if cstr in rename_map:
-            new_cols[c] = rename_map[cstr]
-        else:
-            for k, v in rename_map.items():
-                if k in cstr:
-                    new_cols[c] = v
-                    break
-
-    if new_cols:
-        df = df.rename(columns=new_cols)
+    df = df.dropna(axis=0, how="any")  # also drop empty rows
 
     # Excel often uses merged cells for grouped rows (e.g. Contract value
     # appears once and the following rows are blank). Forward-fill the
@@ -89,7 +19,10 @@ def load_excel(filepath: str) -> pd.DataFrame:
         # Replace empty strings with NaN first so ffill works reliably
         df.loc[:, "Contract"] = df["Contract"].replace("", pd.NA)
         df.loc[:, "Contract"] = df["Contract"].ffill()
-
+    
+    # Convert date column to int if it exists and has decimal values
+    if "Date" in df.columns and df["Date"].dtype == float:
+        df["Date"] = df["Date"].astype(int)
     # Strip whitespace from object columns (do this after ffill so NaNs
     # are preserved until conversion to string)
     for col in df.select_dtypes(include=[object]).columns:
