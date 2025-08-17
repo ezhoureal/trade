@@ -10,7 +10,6 @@ import sys
 import backtrader as bt
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
 # --- Strategy ---
 class PairTradingStrategy(bt.Strategy):
