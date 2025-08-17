@@ -112,4 +112,5 @@ print(f'Total return: {total_return:.2f}')
 
 # Sharpe ratio
 sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', None)
-print(f'Sharpe ratio: {sharpe:.2f}')
+if sharpe:
+    print(f'Sharpe ratio: {sharpe:.2f}')
