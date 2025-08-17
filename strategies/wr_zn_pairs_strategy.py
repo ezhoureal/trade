@@ -73,23 +73,19 @@ class PairTradingStrategy(bt.Strategy):
             self.in_short = False
             print(f'EXIT SHORT at {self.data.datetime.date(0)} | z={zscore:.2f}')
 
-# --- Load Data ---
-def load_parquet(path: str, contract: str):
-    df = pd.read_parquet(path)
-    df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d')
-    df.set_index('Date', inplace=True)
-    df = df[df['Contract'] == contract]
-    print(df)
-    return bt.feeds.PandasData(dataname=df, timeframe=bt.TimeFrame.Days)
-
 cerebro = bt.Cerebro()
 
-data1 = load_parquet('data/2024.parquet', 'zn2504')
-data2 = load_parquet('data/2024.parquet', 'wr2501')
-print(data1)
+def get_contract_data(df: pd.DataFrame, symbol: str):
+    data = df[df['Contract'] == symbol]
+    data['Date'] = pd.to_datetime(data['Date'], format='%Y%m%d')
+    data.set_index('Date', inplace=True)
+    return bt.feeds.PandasData(dataname=data, timeframe=bt.TimeFrame.Days)
 
-cerebro.adddata(data1, name='zn2504')
-cerebro.adddata(data2, name='wr2501')
+df = pd.read_parquet('data/2023.parquet')
+data1 = get_contract_data(df, 'zn2404')
+data2 = get_contract_data(df, 'wr2401')
+cerebro.adddata(data1, name='zn2404')
+cerebro.adddata(data2, name='wr2401')
 
 cerebro.addstrategy(PairTradingStrategy)
 cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
@@ -98,10 +94,6 @@ cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
 
 # Get analyzer results
 strat = cerebro.run()[0]
-
-# --- Logging ---
-total_trades = strat.analyzers.trades.get_analysis().total.closed if hasattr(strat.analyzers.trades.get_analysis().total, 'closed') else strat.analyzers.trades.get_analysis().total
-print(f'Total closed trades: {total_trades}')
 
 # Total return
 returns = strat.analyzers.returns.get_analysis()
