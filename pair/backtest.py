@@ -54,7 +54,8 @@ class PairTradingStrategy(bt.Strategy):
             self.buy(data=self.data2)
             self.in_short = True
             self.in_long = False
-            print(f'SHORT at {self.data.datetime.date(0)} | z={zscore:.2f}')
+            if hasattr(self, 'debug') and self.debug:
+                print(f'SHORT at {self.data.datetime.date(0)} | z={zscore:.2f}')
 
         # Enter long spread (buy data1, sell data2)
         elif zscore < -self.params.entry_z and not self.in_long:
@@ -63,17 +64,20 @@ class PairTradingStrategy(bt.Strategy):
             self.sell(data=self.data2)
             self.in_long = True
             self.in_short = False
-            print(f'LONG at {self.data.datetime.date(0)} | z={zscore:.2f}')
+            if hasattr(self, 'debug') and self.debug:
+                print(f'LONG at {self.data.datetime.date(0)} | z={zscore:.2f}')
 
         # Exit positions when spread normalizes
         elif self.in_long and abs(zscore) < self.params.exit_z:
             self.close()
             self.in_long = False
-            print(f'EXIT LONG at {self.data.datetime.date(0)} | z={zscore:.2f}')
+            if hasattr(self, 'debug') and self.debug:
+                print(f'EXIT LONG at {self.data.datetime.date(0)} | z={zscore:.2f}')
         elif self.in_short and abs(zscore) < self.params.exit_z:
             self.close()
             self.in_short = False
-            print(f'EXIT SHORT at {self.data.datetime.date(0)} | z={zscore:.2f}')
+            if hasattr(self, 'debug') and self.debug:
+                print(f'EXIT SHORT at {self.data.datetime.date(0)} | z={zscore:.2f}')
 
 
 def get_contract_data(df: pd.DataFrame, symbol: str):
@@ -89,12 +93,9 @@ def get_contract_data(df: pd.DataFrame, symbol: str):
 
 
 def run_strategy(contract1: str, contract2: str, data: pd.DataFrame, 
-                lookback: int = 20, entry_z: float = 2.0, exit_z: float = 0.5):
+                lookback: int = 20, entry_z: float = 2.0, exit_z: float = 0.5) -> dict:
     """Run the pairs trading strategy with specified contracts."""
-    
-    # Create cerebro engine
     cerebro = bt.Cerebro()
-    
     # Add data feeds
     try:
         data1 = get_contract_data(data, contract1)
@@ -115,45 +116,20 @@ def run_strategy(contract1: str, contract2: str, data: pd.DataFrame,
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
-    
-    print(f"Running pairs trading strategy:")
-    print(f"  Contract 1: {contract1}")
-    print(f"  Contract 2: {contract2}")
-    print(f"  Parameters: lookback={lookback}, entry_z={entry_z}, exit_z={exit_z}")
-    print("-" * 60)
-    
     # Run strategy
-    strat = cerebro.run()[0]
+    result = cerebro.run()[0]
     
-    # Display results
-    print("-" * 60)
-    print("RESULTS:")
-    
-    # Total return
-    returns = strat.analyzers.returns.get_analysis()
-    total_return = returns.get('rtot', None)
-    if total_return is None:  # fallback
-        total_return = strat.broker.getvalue() - cerebro.broker.startingcash
-    print(f'Total return: {total_return:.2f}')
-    
-    # Sharpe ratio
-    sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', None)
-    if sharpe:
-        print(f'Sharpe ratio: {sharpe:.2f}')
-    
-    # Trade analysis
-    trades = strat.analyzers.trades.get_analysis()
-    if trades.total.total > 0:
-        print(f"Total trades: {trades.total.total}")
-        print(f"Winning trades: {trades.won.total}")
-        print(f"Losing trades: {trades.lost.total}")
-        if trades.won.total > 0:
-            print(f"Average winning trade: {trades.won.pnl.average:.2f}")
-        if trades.lost.total > 0:
-            print(f"Average losing trade: {trades.lost.pnl.average:.2f}")
-    
-    return strat
-
+    # Extract results
+    returns = result.analyzers.returns.get_analysis()
+    sharpe = result.analyzers.sharpe.get_analysis()
+    trades = result.analyzers.trades.get_analysis()
+    if sharpe['sharperatio'] is None:
+        raise ValueError("Sharpe ratio wasn't generated, not enough samples.")
+    return {
+        'total_return': returns.get('rtot', 0.0),
+        'sharpe_ratio': sharpe.get('sharperatio', 0.0),
+        'total_trades': trades.total.total,
+    }
 
 def main():
     """Main function to parse arguments and run the strategy."""
@@ -167,10 +143,9 @@ Examples:
         """
     )
     
-    parser.add_argument('-a', help='First contract symbol (e.g., zn2404)')
-    parser.add_argument('-b', help='Second contract symbol (e.g., wr2401)')
-    parser.add_argument('--data', '-d', required=True, 
-                       help='Path to the parquet data file')
+    parser.add_argument('contract1', help='First contract symbol (e.g., zn2404)')
+    parser.add_argument('contract2', help='Second contract symbol (e.g., wr2401)')
+    parser.add_argument('data', help='Path to the parquet data file')
     parser.add_argument('--lookback', '-l', type=int, default=20,
                        help='Rolling window size for mean/std calculation (default: 20)')
     parser.add_argument('--entry-z', '-e', type=float, default=2.0,
@@ -181,14 +156,41 @@ Examples:
     args = parser.parse_args()
     try:
         df = pd.read_parquet(args.data)
-        run_strategy(
-            contract1=args.a,
-            contract2=args.b,
+        res = run_strategy(
+            contract1=args.contract1,
+            contract2=args.contract2,
             data=df,
             lookback=args.lookback,
             entry_z=args.entry_z,
             exit_z=args.exit_z
         )
+
+        # Display results
+        print("-" * 60)
+        print("RESULTS:")
+        
+        # Total return
+        returns = res.analyzers.returns.get_analysis()
+        total_return = returns.get('rtot', None)
+        if total_return is None:  # fallback
+            total_return = res.broker.getvalue() - cerebro.broker.startingcash
+        print(f'Total return: {total_return:.2f}')
+        
+        # Sharpe ratio
+        sharpe = res.analyzers.sharpe.get_analysis().get('sharperatio', None)
+        if sharpe:
+            print(f'Sharpe ratio: {sharpe:.2f}')
+        
+        # Trade analysis
+        trades = res.analyzers.trades.get_analysis()
+        if trades.total.total > 0:
+            print(f"Total trades: {trades.total.total}")
+            print(f"Winning trades: {trades.won.total}")
+            print(f"Losing trades: {trades.lost.total}")
+            if trades.won.total > 0:
+                print(f"Average winning trade: {trades.won.pnl.average:.2f}")
+            if trades.lost.total > 0:
+                print(f"Average losing trade: {trades.lost.pnl.average:.2f}")
     except Exception as e:
         print(f"Error running strategy: {e}")
         sys.exit(1)
