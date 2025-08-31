@@ -11,7 +11,7 @@ from typing import List
 
 import pandas as pd
 
-from pair.market_utils import load_excel
+from pair_discovery.market_utils import load_excel
 
 logger = logging.getLogger("excel_to_parquet")
 
