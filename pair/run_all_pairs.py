@@ -165,11 +165,13 @@ def print_summary(results: List[dict]):
     sharpes = [r['sharpe_ratio'] for r in results]
 
     print(f"\nReturn Statistics:")
-    # print(f"  Mean return: {sum(returns) / len(returns):.2f}")
     print(f"  Positive returns: {len([r for r in returns if r > 0])}/{len(returns)}")
     
     print(f"\nSharpe Ratio Statistics:")
-    print(f"  Best Sharpe: {max(sharpes):.2f}")
+    if sharpes:
+        print(f"  Best Sharpe: {max(sharpes):.2f}")
+    else:
+        print(f"  No results with positive Sharpe ratios")
     
     # Top 10 best performing pairs
     best_pairs = results[:10]

@@ -123,15 +123,36 @@ def run_strategy(contract1: str, contract2: str, data: pd.DataFrame,
     returns = result.analyzers.returns.get_analysis()
     sharpe = result.analyzers.sharpe.get_analysis()
     trades = result.analyzers.trades.get_analysis()
-    if sharpe['sharperatio'] is None:
-        raise ValueError("Sharpe ratio wasn't generated, not enough samples.")
+    
+    # Extract metrics with safe defaults
+    sharpe_value = sharpe.get('sharperatio') if sharpe else None
+    sharpe_ratio = sharpe_value if sharpe_value is not None else 0.0
+    
+    # Safe extraction of trade statistics
+    try:
+        total_trades = trades.total.total
+    except (KeyError, AttributeError):
+        total_trades = 0
+        
+    try:
+        winning_trades = trades.won.total
+    except (KeyError, AttributeError):
+        winning_trades = 0
+        
+    try:
+        losing_trades = trades.lost.total
+    except (KeyError, AttributeError):
+        losing_trades = 0
+    
+    win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
+
     return {
         'total_return': returns.get('rtot', 0.0),
-        'sharpe_ratio': sharpe.get('sharperatio', 0.0),
-        'total_trades': trades.total.total,
-        'winning_trades': trades.won.total,
-        'losing_trades': trades.lost.total,
-        'win_rate': trades.won.total / trades.total.total if trades.total.total > 0 else 0.0,
+        'sharpe_ratio': sharpe_ratio,
+        'total_trades': total_trades,
+        'winning_trades': winning_trades,
+        'losing_trades': losing_trades,
+        'win_rate': win_rate,
     }
 
 def main():
@@ -172,28 +193,13 @@ Examples:
         print("-" * 60)
         print("RESULTS:")
         
-        # Total return
-        returns = res.analyzers.returns.get_analysis()
-        total_return = returns.get('rtot', None)
-        if total_return is None:  # fallback
-            total_return = res.broker.getvalue() - cerebro.broker.startingcash
-        print(f'Total return: {total_return:.2f}')
-        
-        # Sharpe ratio
-        sharpe = res.analyzers.sharpe.get_analysis().get('sharperatio', None)
-        if sharpe:
-            print(f'Sharpe ratio: {sharpe:.2f}')
-        
-        # Trade analysis
-        trades = res.analyzers.trades.get_analysis()
-        if trades.total.total > 0:
-            print(f"Total trades: {trades.total.total}")
-            print(f"Winning trades: {trades.won.total}")
-            print(f"Losing trades: {trades.lost.total}")
-            if trades.won.total > 0:
-                print(f"Average winning trade: {trades.won.pnl.average:.2f}")
-            if trades.lost.total > 0:
-                print(f"Average losing trade: {trades.lost.pnl.average:.2f}")
+        # The res is now a dictionary from our updated run_strategy function
+        print(f'Total return: {res["total_return"]:.2f}')
+        print(f'Sharpe ratio: {res["sharpe_ratio"]:.2f}')
+        print(f"Total trades: {res['total_trades']}")
+        print(f"Winning trades: {res['winning_trades']}")
+        print(f"Losing trades: {res['losing_trades']}")
+        print(f"Win rate: {res['win_rate']:.2%}")
     except Exception as e:
         print(f"Error running strategy: {e}")
         sys.exit(1)
