@@ -81,6 +81,8 @@ class DynamicCopperFuelStrategy(bt.Strategy):
         ('max_active_pairs', 3),        # maximum number of active pairs
         ('min_volume_threshold', 50),    # minimum daily volume requirement
         ('exploration_rate', 0.2),      # rate of exploring new pairs
+        ('_contract_names', []),        # contract names list from load function
+        ('_full_data', None),           # full original dataframe for daily context
     )
 
     def __init__(self):
@@ -91,18 +93,34 @@ class DynamicCopperFuelStrategy(bt.Strategy):
         )
         
         # Access the full dataset from the master data feed
-        self.full_data = self.datas[0]._full_dataset
+        self.full_data = self.p._full_data
         self.current_date = None
         
-        # Get unique contracts
+        # Build mapping from contract names to data feed indices
+        self.contract_to_data_idx = {}
+        contract_names = self.p._contract_names
+        
+        # Map contract names to data feed indices
+        for i, contract_name in enumerate(contract_names):
+            if contract_name != 'master':  # Skip master feed
+                self.contract_to_data_idx[contract_name] = i
+        
+        # Get available contracts for trading (those with data feeds)
+        available_cu_contracts = [c for c in self.contract_to_data_idx.keys() if c.startswith('cu')]
+        available_fu_contracts = [c for c in self.contract_to_data_idx.keys() if c.startswith('fu')]
+        
+        # Get all contracts from full dataset for spread calculation
         all_contracts = self.full_data['Contract'].unique()
         self.copper_contracts = [c for c in all_contracts if c.startswith('cu')]
         self.fuel_contracts = [c for c in all_contracts if c.startswith('fu')]
         
-        print(f"Initialized with {len(self.copper_contracts)} copper and {len(self.fuel_contracts)} fuel contracts")
+        print(f"Initialized with {len(self.copper_contracts)} copper and {len(self.fuel_contracts)} fuel contracts in data")
+        print(f"Available for trading: {len(available_cu_contracts)} copper, {len(available_fu_contracts)} fuel contracts")
+        print(f"Contract to data mapping: {list(self.contract_to_data_idx.keys())}")
         
         # Track active positions and spread histories
-        self.active_positions = {}  # {pair: {'type': 'long'/'short', 'entry_z': float, 'entry_bar': int}}
+        # Now include data feed references for proper trading
+        self.active_positions = {}  # {pair: {'type': 'long'/'short', 'entry_z': float, 'entry_bar': int, 'cu_data_idx': int, 'fu_data_idx': int}}
         self.spread_histories = defaultdict(lambda: deque(maxlen=self.p.lookback_zscore))
         
         # Pair exploration tracking
@@ -118,14 +136,11 @@ class DynamicCopperFuelStrategy(bt.Strategy):
         # Get current date from the master data feed
         try:
             self.current_date = self.data.datetime.date(0)
+            current_ts = pd.Timestamp(self.current_date)
         except:
-            print("Error getting current date")
             return
             
-        if self.bar_count <= 25 or self.bar_count % 50 == 0:
-            print(f"Bar {self.bar_count}, Date: {self.current_date}")
-        
-        current_ts = pd.Timestamp(self.datas[0].datetime.date(0))
+        # Check full dataset for today
         today_data = self.full_data[self.full_data['Date'] == current_ts]
         if today_data.empty:
             return
@@ -145,7 +160,6 @@ class DynamicCopperFuelStrategy(bt.Strategy):
         if not filtered_data.empty:
             top_cu_contracts = [c for c in filtered_data['Contract'].unique() if c.startswith('cu')]
             top_fu_contracts = [c for c in filtered_data['Contract'].unique() if c.startswith('fu')]
-            
             # Try to enter pairs only from top contracts
             for cu_contract in top_cu_contracts:
                 for fu_contract in top_fu_contracts:
@@ -237,7 +251,7 @@ class DynamicCopperFuelStrategy(bt.Strategy):
             print(f"  Cleaned up {len(pairs_to_remove)} expired pairs from spread histories")
         elif self.bar_count % 100 == 1:  # Log even when no cleanup needed
             print(f"  Checked for expired contracts, found {len(pairs_to_remove)} to remove")
-    
+
     def _is_contract_expired(self, contract: str, current_date: pd.Timestamp) -> bool:
         """Check if a contract is expired based on its name."""
         try:
@@ -279,11 +293,18 @@ class DynamicCopperFuelStrategy(bt.Strategy):
         if position_size < 1:
             position_size = 1
         
+        # Check if we have data feeds for both contracts - REQUIRED for trading
+        cu_data_idx = self.contract_to_data_idx.get(cu_name)
+        fu_data_idx = self.contract_to_data_idx.get(fu_name)
+        # Generate unique tradeid for this pair to track P&L separately
+        pair_tradeid = hash(f"{cu_name}_{fu_name}") % 1000000  # Ensure positive integer
+        
         # Check entry conditions
         if z_score > self.p.entry_z:
-            # Enter short spread (sell copper, buy fuel) - simulate with short position
-            # Place actual trade with Backtrader
-            self.sell(size=position_size)
+            # Enter short spread (sell copper, buy fuel)
+            self.sell(data=self.datas[cu_data_idx], size=position_size, tradeid=pair_tradeid)
+            self.buy(data=self.datas[fu_data_idx], size=position_size, tradeid=pair_tradeid + 1)
+            print(f"    ENTER SHORT SPREAD {cu_name}/{fu_name} - Sell {cu_name}, Buy {fu_name}")
             
             self.active_positions[pair] = {
                 'type': 'short_spread',
@@ -291,14 +312,17 @@ class DynamicCopperFuelStrategy(bt.Strategy):
                 'entry_bar': self.bar_count,
                 'entry_spread': current_spread,
                 'position_size': position_size,
-                'bt_position': 'short'
+                'bt_position': 'short',
+                'tradeid': pair_tradeid,
+                'cu_data_idx': cu_data_idx,
+                'fu_data_idx': fu_data_idx,
             }
-            # print(f"    ENTER SHORT SPREAD {cu_name}/{fu_name} at bar {self.bar_count}, z={z_score:.2f}, size={position_size}")
                 
         elif z_score < -self.p.entry_z:
-            # Enter long spread (buy copper, sell fuel) - simulate with long position
-            # Place actual trade with Backtrader
-            self.buy(size=position_size)
+            # Enter long spread (buy copper, sell fuel)  
+            self.buy(data=self.datas[cu_data_idx], size=position_size, tradeid=pair_tradeid)
+            self.sell(data=self.datas[fu_data_idx], size=position_size, tradeid=pair_tradeid + 1)
+            print(f"    ENTER LONG SPREAD {cu_name}/{fu_name} - Buy {cu_name}, Sell {fu_name}")
             
             self.active_positions[pair] = {
                 'type': 'long_spread',
@@ -306,9 +330,11 @@ class DynamicCopperFuelStrategy(bt.Strategy):
                 'entry_bar': self.bar_count,
                 'entry_spread': current_spread,
                 'position_size': position_size,
-                'bt_position': 'long'
+                'bt_position': 'long',
+                'tradeid': pair_tradeid,
+                'cu_data_idx': cu_data_idx,
+                'fu_data_idx': fu_data_idx,
             }
-            # print(f"    ENTER LONG SPREAD {cu_name}/{fu_name} at bar {self.bar_count}, z={z_score:.2f}, size={position_size}")
     
     def _manage_existing_positions(self):
         """Manage all existing positions."""
@@ -346,11 +372,19 @@ class DynamicCopperFuelStrategy(bt.Strategy):
     def _close_position(self, pair: Tuple[str, str], z_score: float, position_info: dict, reason: str = "reversion"):
         """Close a position and update performance metrics."""
         try:
-            # Close the actual Backtrader position
+            # Close the actual Backtrader position using the same tradeid
+            tradeid = position_info.get('tradeid', 0)
+            cu_data_idx = position_info.get('cu_data_idx')
+            fu_data_idx = position_info.get('fu_data_idx')
+            
             if position_info.get('bt_position') == 'long':
-                order = self.sell(size=position_info.get('position_size', 1))
+                # Close long spread: sell copper, buy back fuel
+                self.sell(data=self.datas[cu_data_idx], size=position_info.get('position_size', 1), tradeid=tradeid)
+                self.buy(data=self.datas[fu_data_idx], size=position_info.get('position_size', 1), tradeid=tradeid + 1)
             elif position_info.get('bt_position') == 'short':
-                order = self.buy(size=position_info.get('position_size', 1))  # Cover short
+                # Close short spread: buy back copper, sell fuel
+                self.buy(data=self.datas[cu_data_idx], size=position_info.get('position_size', 1), tradeid=tradeid)
+                self.sell(data=self.datas[fu_data_idx], size=position_info.get('position_size', 1), tradeid=tradeid + 1)
     
             # Calculate trade return (simplified)
             entry_z = position_info['entry_z']
@@ -371,18 +405,20 @@ class DynamicCopperFuelStrategy(bt.Strategy):
                 'entry_z': entry_z,
                 'exit_z': z_score,
                 'return': trade_return,
-                'reason': reason
+                'reason': reason,
+                'tradeid': tradeid,
             })
             
             cu_name, fu_name = pair
-            # print(f"    EXIT {position_info['type'].upper()} {cu_name}/{fu_name} at bar {self.bar_count}, "
-            #       f"entry_z={entry_z:.2f}, exit_z={z_score:.2f}, return={trade_return:.2f}, reason={reason}")
+            print(f"    EXIT {position_info['type'].upper()} {cu_name}/{fu_name} at bar {self.bar_count}, "
+                  f"entry_z={entry_z:.2f}, exit_z={z_score:.2f}, return={trade_return:.2f}, reason={reason}, "
+                  f"tradeid={tradeid}")
             
         except Exception as e:
             print(f"Error closing position for {pair}: {e}")
 
 def load_all_contracts(data_path: str) -> Tuple[Dict[str, bt.feeds.PandasData], pd.DataFrame]:
-    """Load all copper and fuel oil contracts and create a single master data feed."""
+    """Load all copper and fuel oil contracts and create individual data feeds for each with aligned timeframes."""
     import glob
     import os
     
@@ -423,49 +459,79 @@ def load_all_contracts(data_path: str) -> Tuple[Dict[str, bt.feeds.PandasData], 
     print(f"Found {len(copper_contracts)} copper contracts and {len(fuel_contracts)} fuel contracts")
     print(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
     
-    # Create a master dataset by selecting the most active contract per day
-    # This ensures we have continuous data for backtrader
-    master_data = []
+    # Get the full date range across all data
+    all_dates = pd.date_range(start=df['Date'].min(), end=df['Date'].max(), freq='D')
+    # Use actual trading days from the data 
+    actual_trading_days = sorted(df['Date'].unique())
+    print(f"Full date range: {df['Date'].min()} to {df['Date'].max()}")
+    print(f"Using {len(actual_trading_days)} actual trading days for alignment")
     
-    # Get all unique dates
-    all_dates = sorted(df['Date'].unique())
+    # Find a reasonable start date where we have sufficient active contracts
+    # Count contracts active on each date
+    contract_counts_by_date = df.groupby('Date')['Contract'].nunique().sort_index()
     
-    for date in all_dates:
-        day_data = df[df['Date'] == date]
+    # Find the earliest date where we have at least 20 active contracts (good liquidity)
+    min_active_contracts = 20
+    viable_start_dates = contract_counts_by_date[contract_counts_by_date >= min_active_contracts]
+    
+    if not viable_start_dates.empty:
+        alignment_start_date = viable_start_dates.index[0]
+        print(f"Starting alignment from {alignment_start_date} (first date with {min_active_contracts}+ active contracts)")
+        # Filter trading days to start from viable date
+        actual_trading_days = [d for d in actual_trading_days if d >= alignment_start_date]
+    else:
+        print(f"Warning: No dates found with {min_active_contracts}+ contracts, using full range")
+        alignment_start_date = df['Date'].min()
         
-        # Find the most active copper contract for this day (highest volume)
-        cu_day = day_data[day_data['Contract'].str.startswith('cu')]
-        if not cu_day.empty:
-            # Use the contract with highest volume, or first one if volume not available
-            if 'Volume' in cu_day.columns:
-                best_cu = cu_day.loc[cu_day['Volume'].idxmax()]
-            else:
-                best_cu = cu_day.iloc[0]
+    print(f"Final alignment: {len(actual_trading_days)} trading days from {min(actual_trading_days)} to {max(actual_trading_days)}")
+    
+    # Create individual data feeds for ALL copper and fuel contracts with sufficient data
+    contract_feeds = {}
+    min_data_points = 30  # Minimum number of data points required for a contract
+    
+    # Get all copper and fuel contracts that have sufficient data
+    target_contracts = copper_contracts + fuel_contracts
+    
+    contracts_with_feeds = []
+    for contract in target_contracts:
+        contract_data = df[df['Contract'] == contract].copy()
+        
+        # Only include contracts with sufficient data
+        if len(contract_data) < min_data_points:
+            continue
             
-            master_data.append({
-                'Date': date,
-                'open': best_cu['Open'],
-                'high': best_cu['High'],
-                'low': best_cu['Low'],
-                'close': best_cu['Close'],
-                'volume': best_cu.get('Volume', 1000),
-                'primary_contract': best_cu['Contract']
-            })
+        contracts_with_feeds.append(contract)
+        
+        # Prepare data for backtrader
+        contract_data = contract_data.set_index('Date')
+        contract_data = contract_data.rename(columns={
+            'Open': 'open',
+            'High': 'high', 
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        })
+        
+        # Fill missing volume with 1000 if not available
+        if 'volume' not in contract_data.columns:
+            contract_data['volume'] = 1000
+        
+        # CRITICAL: Align all contracts to the same date range
+        # Create a DataFrame with all trading days
+        aligned_data = pd.DataFrame(index=pd.DatetimeIndex(actual_trading_days, name='Date'))
+        aligned_data = aligned_data.join(contract_data[['open', 'high', 'low', 'close', 'volume']], how='left')
+        aligned_data = aligned_data.ffill()
+        aligned_data = aligned_data.bfill()
+        if len(aligned_data) >= min_data_points:  # Re-check after alignment
+            # Create data feed for this contract
+            contract_feeds[contract] = bt.feeds.PandasData(
+                dataname=aligned_data[['open', 'high', 'low', 'close', 'volume']]
+            )
+        else:
+            print(f"Contract {contract} excluded after alignment - insufficient data ({len(aligned_data)} points)")
     
-    master_df = pd.DataFrame(master_data)
-    master_df.set_index('Date', inplace=True)
-    
-    # Create a single data feed for backtrader
-    data_feeds = {
-        'master': bt.feeds.PandasData(dataname=master_df)
-    }
-    
-    # Store the full dataset in the data feed for strategy access
-    data_feeds['master']._full_dataset = df
-    
-    print(f"Created master data feed with {len(master_df)} trading days")
-    
-    return data_feeds, df
+    print(f"Created {len(contract_feeds)} individual contract data feeds with aligned timeframes")
+    return contract_feeds, df
 
 
 def run_dynamic_strategy(data_path: str, **kwargs) -> dict:
@@ -478,9 +544,14 @@ def run_dynamic_strategy(data_path: str, **kwargs) -> dict:
     if not data_feeds:
         raise ValueError("No valid contract data found")
     
-    # Add all data feeds to cerebro
+    # Store contract names for strategy reference
+    contract_names = list(data_feeds.keys())
+    
+    # Add all data feeds to cerebro with proper names
     for name, feed in data_feeds.items():
         cerebro.adddata(feed, name=name)
+        # Store contract mapping on the feed for strategy access
+        feed._contract_name = name
     
     # Add strategy with parameters
     cerebro.addstrategy(
@@ -489,7 +560,9 @@ def run_dynamic_strategy(data_path: str, **kwargs) -> dict:
         entry_z=kwargs.get('entry_z', 2.0),
         exit_z=kwargs.get('exit_z', 0.5),
         pair_evaluation_freq=kwargs.get('pair_evaluation_freq', 10),
-        max_active_pairs=kwargs.get('max_active_pairs', 3)
+        max_active_pairs=kwargs.get('max_active_pairs', 3),
+        _contract_names=contract_names,  # Pass contract names to strategy
+        _full_data=original_df  # Pass full data to strategy
     )
     
     # Add analyzers
