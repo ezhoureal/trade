@@ -9,7 +9,6 @@ import argparse
 import csv
 import glob
 import os
-import sys
 from typing import List, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -17,7 +16,7 @@ from multiprocessing import cpu_count
 import pandas as pd
 
 # Import the backtest strategy
-from backtest import run_strategy
+from strategies.pair_trade import run_strategy
 
 
 def load_concatenated_data(data_dir: str) -> pd.DataFrame:
