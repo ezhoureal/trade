@@ -18,6 +18,8 @@ pub struct TradeLogEntry {
     pub exit_z: f64,
     pub ret: f64,
     pub pct_move: f64,
+    pub entry_spread: f64,
+    pub exit_spread: f64,
     pub reason: String,
     pub trade_id: u64,
 }
@@ -206,6 +208,8 @@ impl<'a> Engine<'a> {
                 exit_z: z,
                 ret: trade_ret,
                 pct_move: directional,
+                entry_spread: pos.entry_spread,
+                exit_spread: last_spread,
                 reason: "reversion".into(),
                 trade_id: pos.trade_id,
             });
@@ -429,6 +433,8 @@ impl<'a> Engine<'a> {
                     } else {
                         0.0
                     },
+                    entry_spread: pos.entry_spread,
+                    exit_spread: last_spread_opt.unwrap_or(pos.entry_spread),
                     reason: "expiry".into(),
                     trade_id: pos.trade_id,
                 });
