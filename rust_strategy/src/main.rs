@@ -1,14 +1,14 @@
-mod params;
 mod data;
-mod stats;
 mod engine;
+mod params;
+mod stats;
 
-use clap::Parser;
 use anyhow::Result;
+use clap::Parser;
 use serde::Serialize;
 
-use crate::params::Params;
 use crate::engine::run_engine;
+use crate::params::Params;
 
 #[derive(Serialize)]
 struct OutputSummary {
@@ -23,7 +23,10 @@ struct OutputSummary {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "rust_strategy", about = "Dynamic Copper-Fuel Oil Pairs Strategy (Rust)")]
+#[command(
+    name = "rust_strategy",
+    about = "Dynamic Copper-Fuel Oil Pairs Strategy (Rust)"
+)]
 struct Cli {
     /// Path to parquet file or directory of parquet files
     #[arg(long = "data", short = 'd')]
@@ -56,6 +59,10 @@ struct Cli {
     /// Days before a contract's final trading day to force-close positions
     #[arg(long = "expiry-close-days", default_value_t = 3)]
     expiry_close_days: usize,
+
+    /// Optional output JSON file path (if omitted, only stdout is used)
+    #[arg(long = "out", short = 'o')]
+    out: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -74,6 +81,13 @@ fn main() -> Result<()> {
     };
 
     let result = run_engine(&cli.data, &params)?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let json = serde_json::to_string_pretty(&result)?;
+    if let Some(path) = cli.out.as_ref() {
+        std::fs::write(path, json)?;
+        eprintln!("Wrote output JSON to {}", path);
+    } else {
+        println!("{}", json);
+    }
+
     Ok(())
 }

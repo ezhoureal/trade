@@ -16,3 +16,4 @@ wheels/
 # Rust
 target/
 **/target/
+rust_strategy/*.json
