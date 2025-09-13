@@ -52,6 +52,10 @@ struct Cli {
     /// Enable debug logging
     #[arg(long = "debug", default_value_t = false)]
     debug: bool,
+
+    /// Days before a contract's final trading day to force-close positions
+    #[arg(long = "expiry-close-days", default_value_t = 3)]
+    expiry_close_days: usize,
 }
 
 fn main() -> Result<()> {
@@ -65,6 +69,7 @@ fn main() -> Result<()> {
         lookback_performance: 50,
         exploration_rate: 0.2,
         min_volume_threshold: 50,
+        expiry_close_days: cli.expiry_close_days,
         debug: cli.debug,
     };
 

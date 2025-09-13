@@ -8,5 +8,6 @@ pub struct Params {
     pub max_active_pairs: usize,
     pub min_volume_threshold: usize,
     pub exploration_rate: f64,
+    pub expiry_close_days: usize, // days before contract's last appearance to force close
     pub debug: bool,
 }

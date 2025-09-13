@@ -72,6 +72,7 @@ struct Engine<'a> {
     bar_count: usize,
     equity: f64,
     equity_curve: Vec<f64>,
+    contract_last_day: HashMap<String, usize>,
 }
 
 impl<'a> Engine<'a> {
@@ -86,6 +87,7 @@ impl<'a> Engine<'a> {
             bar_count: 0,
             equity: 0.0,
             equity_curve: Vec::new(),
+            contract_last_day: HashMap::new(),
         }
     }
 }
@@ -93,25 +95,42 @@ impl<'a> Engine<'a> {
 impl<'a> Engine<'a> {
     // compute mean, std, z of last value; returns (z, last_spread)
     fn calc_z(&self, hist: &VecDeque<f64>) -> Option<(f64, f64)> {
-        if hist.is_empty() { return None; }
+        if hist.is_empty() {
+            return None;
+        }
         let len = hist.len();
         let mean = hist.iter().copied().sum::<f64>() / len as f64;
-        let var = hist.iter().map(|v| { let d = v - mean; d * d }).sum::<f64>() / len as f64;
+        let var = hist
+            .iter()
+            .map(|v| {
+                let d = v - mean;
+                d * d
+            })
+            .sum::<f64>()
+            / len as f64;
         let std = var.sqrt();
-        if std == 0.0 { return None; }
+        if std == 0.0 {
+            return None;
+        }
         let last = *hist.back()?;
         Some(((last - mean) / std, last))
     }
 
     fn push_spread(&mut self, pair: (String, String), spread: f64) {
         let lookback = self.params.lookback_zscore;
-        let entry = self.spread_histories
+        let entry = self
+            .spread_histories
             .entry(pair.clone())
             .or_insert_with(|| VecDeque::with_capacity(lookback));
-        if entry.len() == lookback { entry.pop_front(); }
+        if entry.len() == lookback {
+            entry.pop_front();
+        }
         entry.push_back(spread);
         if self.params.debug && entry.len() == lookback {
-            eprintln!("Pair {:?} reached lookback with last spread {:.4}", pair, spread);
+            eprintln!(
+                "Pair {:?} reached lookback with last spread {:.4}",
+                pair, spread
+            );
         }
     }
 
@@ -129,19 +148,34 @@ impl<'a> Engine<'a> {
             }
         }
         for pair in to_close {
-            let pos = match self.active_positions.remove(&pair) { Some(p) => p, None => continue };
-            let hist = match self.spread_histories.get(&pair) { Some(h) => h, None => continue };
-            let (z, _) = match self.calc_z(hist) { Some(v) => v, None => continue };
+            let pos = match self.active_positions.remove(&pair) {
+                Some(p) => p,
+                None => continue,
+            };
+            let hist = match self.spread_histories.get(&pair) {
+                Some(h) => h,
+                None => continue,
+            };
+            let (z, _) = match self.calc_z(hist) {
+                Some(v) => v,
+                None => continue,
+            };
             let mut trade_ret = z - pos.entry_z;
-            if pos.kind == PositionKind::ShortSpread { trade_ret = -trade_ret; }
+            if pos.kind == PositionKind::ShortSpread {
+                trade_ret = -trade_ret;
+            }
             self.equity += trade_ret;
-            let stats = self.pair_stats
+            let stats = self
+                .pair_stats
                 .entry(pair.clone())
                 .or_insert_with(|| PairStats::new(self.params.lookback_performance));
             stats.record(trade_ret, self.bar_count);
             self.trade_log.push(TradeLogEntry {
                 pair: format!("{}/{}", pair.0, pair.1),
-                kind: match pos.kind { PositionKind::LongSpread => "long_spread".into(), PositionKind::ShortSpread => "short_spread".into() },
+                kind: match pos.kind {
+                    PositionKind::LongSpread => "long_spread".into(),
+                    PositionKind::ShortSpread => "short_spread".into(),
+                },
                 entry_bar: pos.entry_bar,
                 exit_bar: self.bar_count,
                 entry_z: pos.entry_z,
@@ -153,26 +187,134 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn try_enter_positions(&mut self, cu_contracts_today: &[(String, f64)], fu_contracts_today: &[(String, f64)]) {
-        if self.active_positions.len() >= self.params.max_active_pairs { return; }
+    fn try_enter_positions(
+        &mut self,
+        cu_contracts_today: &[(String, f64)],
+        fu_contracts_today: &[(String, f64)],
+    ) {
+        if self.active_positions.len() >= self.params.max_active_pairs {
+            return;
+        }
         for (cu, _oi_cu) in cu_contracts_today {
             for (fu, _oi_fu) in fu_contracts_today {
                 let pair = (cu.clone(), fu.clone());
-                if self.active_positions.len() >= self.params.max_active_pairs { return; }
-                if self.active_positions.contains_key(&pair) { continue; }
-                let hist = match self.spread_histories.get(&pair) { Some(h) => h, None => continue };
-                if hist.len() < self.params.lookback_zscore { continue; }
-                let (z, last_spread) = match self.calc_z(hist) { Some(v) => v, None => continue };
-                if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
-                    eprintln!("Candidate {:?} z={:.3} (threshold {})", pair, z, self.params.entry_z);
+                if self.active_positions.len() >= self.params.max_active_pairs {
+                    return;
                 }
-                if z.abs() <= self.params.entry_z { continue; }
+                if self.active_positions.contains_key(&pair) {
+                    continue;
+                }
+                let hist = match self.spread_histories.get(&pair) {
+                    Some(h) => h,
+                    None => continue,
+                };
+                if hist.len() < self.params.lookback_zscore {
+                    continue;
+                }
+                let (z, last_spread) = match self.calc_z(hist) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
+                    eprintln!(
+                        "Candidate {:?} z={:.3} (threshold {})",
+                        pair, z, self.params.entry_z
+                    );
+                }
+                if z.abs() <= self.params.entry_z {
+                    continue;
+                }
                 let mut hasher = AHasher::default();
                 format!("{}_{}", cu, fu).hash(&mut hasher);
                 let trade_id = hasher.finish();
-                let kind = if z > 0.0 { PositionKind::ShortSpread } else { PositionKind::LongSpread };
-                if self.params.debug { eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z); }
-                self.active_positions.insert(pair.clone(), Position { pair: pair.clone(), kind, entry_z: z, entry_bar: self.bar_count, entry_spread: last_spread, size: ((z.abs()*2.0).floor() as u32).max(1).min(10), trade_id });
+                let kind = if z > 0.0 {
+                    PositionKind::ShortSpread
+                } else {
+                    PositionKind::LongSpread
+                };
+                if self.params.debug {
+                    eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z);
+                }
+                self.active_positions.insert(
+                    pair.clone(),
+                    Position {
+                        pair: pair.clone(),
+                        kind,
+                        entry_z: z,
+                        entry_bar: self.bar_count,
+                        entry_spread: last_spread,
+                        size: ((z.abs() * 2.0).floor() as u32).max(1).min(10),
+                        trade_id,
+                    },
+                );
+            }
+        }
+    }
+
+    fn close_expiring_positions(&mut self) {
+        if self.contract_last_day.is_empty() {
+            return;
+        }
+        let mut to_close: Vec<(String, String)> = Vec::new();
+        for (pair, _pos) in self.active_positions.iter() {
+            // Force close if either leg is within expiry_close_days of its last observed day
+            let (ref c1, ref c2) = pair;
+            let expiry_window = self.params.expiry_close_days;
+            let cur_day = self.bar_count; // bar_count is 1-based per loop increment
+            let needs_close = self
+                .contract_last_day
+                .get(c1)
+                .map(|d| *d <= cur_day + expiry_window)
+                .unwrap_or(false)
+                || self
+                    .contract_last_day
+                    .get(c2)
+                    .map(|d| *d <= cur_day + expiry_window)
+                    .unwrap_or(false);
+            if needs_close {
+                to_close.push(pair.clone());
+            }
+        }
+        if to_close.is_empty() {
+            return;
+        }
+        for pair in to_close {
+            if let Some(pos) = self.active_positions.remove(&pair) {
+                // Mark reason as expiry; compute current z if possible else zero PnL (flat)
+                let z_now = self
+                    .spread_histories
+                    .get(&pair)
+                    .and_then(|h| self.calc_z(h).map(|(z, _)| z));
+                let trade_ret = match z_now {
+                    Some(z) => {
+                        let mut tr = z - pos.entry_z;
+                        if pos.kind == PositionKind::ShortSpread {
+                            tr = -tr;
+                        }
+                        tr
+                    }
+                    None => 0.0,
+                };
+                self.equity += trade_ret;
+                let stats = self
+                    .pair_stats
+                    .entry(pair.clone())
+                    .or_insert_with(|| PairStats::new(self.params.lookback_performance));
+                stats.record(trade_ret, self.bar_count);
+                self.trade_log.push(TradeLogEntry {
+                    pair: format!("{}/{}", pair.0, pair.1),
+                    kind: match pos.kind {
+                        PositionKind::LongSpread => "long_spread".into(),
+                        PositionKind::ShortSpread => "short_spread".into(),
+                    },
+                    entry_bar: pos.entry_bar,
+                    exit_bar: self.bar_count,
+                    entry_z: pos.entry_z,
+                    exit_z: z_now.unwrap_or(pos.entry_z),
+                    ret: trade_ret,
+                    reason: "expiry".into(),
+                    trade_id: pos.trade_id,
+                });
             }
         }
     }
@@ -253,6 +395,27 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
 
     let mut engine = Engine::new(params);
 
+    // Pre-compute last bar index each contract appears (by bar order = trading day index)
+    let mut contract_last_day: HashMap<String, usize> = HashMap::new();
+    {
+        // Build mapping: for each row, record bar index (day order) as last occurrence.
+        // We'll iterate trading_days with index for mapping date -> bar idx.
+        let mut date_to_bar: HashMap<NaiveDate, usize> = HashMap::new();
+        for (i, d) in md.trading_days.iter().enumerate() {
+            date_to_bar.insert(*d, i + 1);
+        }
+        let contract_series_full = contract_series.clone();
+        // Need Date series again; we have row_dates with indices earlier (row_dates aligns to df rows by construction)
+        for (row_idx, nd) in row_dates.iter().enumerate() {
+            if let Some(contract) = contract_series_full.get(row_idx) {
+                if let Some(bar_idx) = date_to_bar.get(nd) {
+                    contract_last_day.insert(contract.to_string(), *bar_idx);
+                }
+            }
+        }
+    }
+    engine.contract_last_day = contract_last_day;
+
     for day in &md.trading_days {
         engine.bar_count += 1;
         let indices = if let Some(v) = date_indices.get(day) {
@@ -330,6 +493,9 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
             }
         }
 
+        // First close positions that are near expiry
+        engine.close_expiring_positions();
+        // Then normal mean reversion closures
         engine.close_positions();
         engine.try_enter_positions(&cu_contracts_today, &fu_contracts_today);
         engine.equity_curve.push(engine.equity);
@@ -347,11 +513,15 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
 
     // Sharpe on equity changes per bar
     let sharpe_ratio = if engine.equity_curve.len() >= 5 {
-        let mean = engine.equity_curve.iter().copied().sum::<f64>() / engine.equity_curve.len() as f64;
+        let mean =
+            engine.equity_curve.iter().copied().sum::<f64>() / engine.equity_curve.len() as f64;
         let var = engine
             .equity_curve
             .iter()
-            .map(|v| { let d = v - mean; d * d })
+            .map(|v| {
+                let d = v - mean;
+                d * d
+            })
             .sum::<f64>()
             / engine.equity_curve.len() as f64;
         let std = var.sqrt();
