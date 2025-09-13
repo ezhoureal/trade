@@ -50,10 +50,6 @@ struct Cli {
     #[arg(long = "exit-z", short = 'x', default_value_t = 0.5)]
     exit_z: f64,
 
-    /// Pair evaluation frequency
-    #[arg(long = "eval-freq", short = 'f', default_value_t = 10)]
-    eval_freq: usize,
-
     /// Enable debug logging
     #[arg(long = "debug", default_value_t = false)]
     debug: bool,
@@ -63,19 +59,23 @@ struct Cli {
     expiry_close_days: usize,
 
     /// Commodity A prefix (e.g. cu) for single-run mode
-    #[arg(long = "commodity-a", default_value = "cu")]
+    #[arg(long = "commodity-a", default_value = "ag")]
     commodity_a: String,
 
     /// Commodity B prefix (e.g. fu) for single-run mode
-    #[arg(long = "commodity-b", default_value = "fu")]
+    #[arg(long = "commodity-b", default_value = "au")]
     commodity_b: String,
 
     /// Comma-separated list of commodity prefix pairs (format a:b,c:d,...) overrides single-run mode
     #[arg(long = "pairs")]
     pairs: Option<String>,
 
+    /// Path to a text file containing commodity prefix pairs (one a:b per line; lines starting with # ignored)
+    #[arg(long = "pairs-file")]
+    pairs_file: Option<String>,
+
     /// Optional output JSON file path (if omitted, only stdout is used)
-    #[arg(long = "out", short = 'o')]
+    #[arg(long = "out", short = 'o', default_value = "output.json")]
     out: Option<String>,
 }
 
@@ -84,10 +84,7 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
         lookback_zscore: cli.lookback_zscore,
         entry_z: cli.entry_z,
         exit_z: cli.exit_z,
-        pair_evaluation_freq: cli.eval_freq,
         lookback_performance: 50,
-        exploration_rate: 0.2,
-        min_volume_threshold: 50,
         expiry_close_days: cli.expiry_close_days,
         debug: cli.debug,
         commodity_a_prefix: a.to_string(),
@@ -107,33 +104,59 @@ fn parse_pairs(spec: &str) -> Vec<(String,String)> {
         .collect()
 }
 
+fn load_pairs_from_file(path: &str) -> Result<Vec<(String,String)>> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut pairs = Vec::new();
+    for line_res in reader.lines() {
+        let line = line_res?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        // allow either comma-separated line of pairs or single a:b
+        if trimmed.contains(',') {
+            pairs.extend(parse_pairs(trimmed));
+        } else {
+            let mut parts = trimmed.split(':');
+            if let (Some(a), Some(b)) = (parts.next(), parts.next()) {
+                let a = a.trim(); let b = b.trim();
+                if !a.is_empty() && !b.is_empty() { pairs.push((a.to_string(), b.to_string())); }
+            }
+        }
+    }
+    Ok(pairs)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(pair_spec) = &cli.pairs {
-        let pairs = parse_pairs(pair_spec);
-        if pairs.is_empty() {
-            eprintln!("No valid pairs parsed from --pairs input: {}", pair_spec);
-            std::process::exit(1);
+    // Gather pairs from either --pairs or --pairs-file (or both). If any provided, run multi-pair mode.
+    let mut collected: Vec<(String,String)> = Vec::new();
+    if let Some(spec) = &cli.pairs { collected.extend(parse_pairs(spec)); }
+    else if let Some(file_path) = &cli.pairs_file {
+        match load_pairs_from_file(file_path) {
+            Ok(mut v) => collected.append(&mut v),
+            Err(e) => {
+                eprintln!("Failed to load pairs from file {}: {:#}", file_path, e);
+                std::process::exit(1);
+            }
         }
+    }
+    if !collected.is_empty() {
         // Parallel execution: each pair independent. Collect results; if any fail, propagate first error.
-        let entries: Vec<MultiPairResultEntry> = pairs
+        let entries: Vec<MultiPairResultEntry> = collected
             .par_iter()
             .map(|(a,b)| {
                 let params = build_params(&cli, a, b);
-                // run_engine returns Result; map it into a tuple we can handle after join
                 let res = run_engine(&cli.data, &params);
                 (a.clone(), b.clone(), res)
             })
-            .map(|(a,b,res)| {
-                match res {
-                    Ok(r) => Ok(MultiPairResultEntry { commodity_a: a, commodity_b: b, total_return: r.total_return, sharpe_ratio: r.sharpe_ratio, win_rate: r.win_rate, total_trades: r.total_trades }),
-                    Err(e) => Err(e),
-                }
+            .map(|(a,b,res)| match res {
+                Ok(r) => Ok(MultiPairResultEntry { commodity_a: a, commodity_b: b, total_return: r.total_return, sharpe_ratio: r.sharpe_ratio, win_rate: r.win_rate, total_trades: r.total_trades }),
+                Err(e) => Err(e),
             })
-            .collect::<Result<Vec<_>>>()?; // propagate error if any
+            .collect::<Result<Vec<_>>>()?;
 
-        // Rankings (same as before)
         let mut by_return = entries.clone();
         by_return.sort_by(|x,y| y.total_return.partial_cmp(&x.total_return).unwrap_or(std::cmp::Ordering::Equal));
         let ranked_by_return = by_return.iter().map(|e| format!("{}:{}", e.commodity_a, e.commodity_b)).collect();
@@ -146,9 +169,7 @@ fn main() -> Result<()> {
         let json = serde_json::to_string_pretty(&aggregate)?;
         if let Some(path) = cli.out.as_ref() {
             std::fs::write(path, json)?;
-            eprintln!("Wrote output JSON to {}", path);
-        } else {
-            println!("{}", json);
+            println!("Wrote output JSON to {}", path);
         }
         return Ok(());
     }
@@ -159,9 +180,7 @@ fn main() -> Result<()> {
     let json = serde_json::to_string_pretty(&result)?;
     if let Some(path) = cli.out.as_ref() {
         std::fs::write(path, json)?;
-        eprintln!("Wrote output JSON to {}", path);
-    } else {
-        println!("{}", json);
+        println!("Wrote output JSON to {}", path);
     }
 
     Ok(())

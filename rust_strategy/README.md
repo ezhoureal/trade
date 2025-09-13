@@ -27,16 +27,30 @@ cargo build --release
 ```
 
 ## Run (example)
+Single pair mode (defaults to cu vs fu if not supplied):
 ```
-./target/release/rust_strategy --data ./data --entry-z 2.0 --exit-z 0.5 --lookback-zscore 20 --max-pairs 3 --eval-freq 10
+./target/release/rust_strategy --data ./data --commodity-a cu --commodity-b fu
 ```
+
+Multiple pairs (inline comma list using `a:b,c:d,...`):
+```
+./target/release/rust_strategy --data ./data --pairs cu:fu,rb:hc,au:ag
+```
+
+Multiple pairs from a file (one `a:b` per line, `#` comments allowed):
+```
+cat > pairs.txt <<EOF
+cu:fu
+rb:hc
+au:ag
+# comment lines ignored
+EOF
+./target/release/rust_strategy --data ./data --pairs-file pairs.txt
+```
+
+You can combine `--pairs` and `--pairs-file`; duplicates are de-duplicated preserving first occurrence order.
 
 ## Differences vs Python Version
 - Portfolio P&L currently emulates the Python logic using z-score differential rather than mark-to-market; can be extended.
 - No Backtrader; custom discrete event loop over dates.
 - Expiration assumption: midpoint (15th) of contract month.
-
-## Next Steps
-- Implement data loader (Polars) with alignment.
-- Implement pair selector & stats.
-- Implement engine loop and JSON output.

@@ -671,6 +671,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         );
     }
 
+    println!("Total trades: {}, Winning: {}, Losing: {}, Win rate: {:.2}%", total_trades, winning_trades, losing_trades, win_rate * 100.0);
     Ok(EngineResult {
         total_return: engine.equity,
         sharpe_ratio,
