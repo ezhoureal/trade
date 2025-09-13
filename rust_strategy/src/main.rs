@@ -59,11 +59,11 @@ struct Cli {
     expiry_close_days: usize,
 
     /// Commodity A prefix (e.g. cu) for single-run mode
-    #[arg(long = "commodity-a", default_value = "ag")]
+    #[arg(short = 'a', default_value = "ag")]
     commodity_a: String,
 
     /// Commodity B prefix (e.g. fu) for single-run mode
-    #[arg(long = "commodity-b", default_value = "au")]
+    #[arg(short = 'b', default_value = "au")]
     commodity_b: String,
 
     /// Comma-separated list of commodity prefix pairs (format a:b,c:d,...) overrides single-run mode
