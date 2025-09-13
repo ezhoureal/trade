@@ -153,7 +153,7 @@ impl<'a> Engine<'a> {
             if let Some(hist) = self.spread_histories.get(pair) {
                 if hist.len() >= self.params.lookback_zscore {
                     if let Some((z, _)) = self.calc_z(hist) {
-                        if z.abs() < self.params.exit_z || z.abs() > 5.0 {
+                        if z.abs() < self.params.exit_z || z.abs() > 3.0 {
                             to_close.push(pair.clone());
                         }
                     }
@@ -187,6 +187,9 @@ impl<'a> Engine<'a> {
                 PositionKind::ShortSpread => -pct_move,
             };
             let trade_ret = directional * pos.capital_committed; // monetary PnL
+            if self.params.debug && trade_ret < 0.0 {
+                eprintln!("LOSS: Trade {} for pair {:?} lost {:.2}, enter spread = {:.2}, exit spread = {:.2}", pos.trade_id, pair, trade_ret, pos.entry_spread, last_spread);
+            }
             self.equity += trade_ret;
             // Release capital and add PnL to cash
             self.invested_capital -= pos.capital_committed;
@@ -221,9 +224,6 @@ impl<'a> Engine<'a> {
         a_contracts_today: &[(String, f64)],
         b_contracts_today: &[(String, f64)],
     ) {
-        if self.active_positions.len() >= self.params.max_active_pairs {
-            return;
-        }
         // If we've exhausted cash, we cannot open any new positions regardless of signals.
         if self.cash <= 0.0 {
             if self.params.debug {
@@ -242,9 +242,6 @@ impl<'a> Engine<'a> {
         for (a, _oi_a) in a_contracts_today {
             for (b, _oi_b) in b_contracts_today {
                 let pair = (a.clone(), b.clone());
-                if self.active_positions.len() >= self.params.max_active_pairs {
-                    return;
-                }
                 if self.active_positions.contains_key(&pair) {
                     continue;
                 }
@@ -576,25 +573,10 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         }
 
         // Sort by OI and take top 3 each (if OI available). If OI absent, fallback to all seen contracts today.
-        if !a_contracts_today.is_empty() {
             a_contracts_today
                 .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            a_contracts_today.truncate(3);
-        } else {
-            // fallback: all a_prices keys
-            for k in a_prices.keys() {
-                a_contracts_today.push((k.clone(), 0.0));
-            }
-        }
-        if !b_contracts_today.is_empty() {
             b_contracts_today
                 .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            b_contracts_today.truncate(3);
-        } else {
-            for k in b_prices.keys() {
-                b_contracts_today.push((k.clone(), 0.0));
-            }
-        }
         if params.debug && engine.bar_count <= 5 {
             eprintln!(
                 "Top a today: {:?}; Top b today: {:?}",
