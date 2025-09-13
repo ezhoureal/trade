@@ -191,6 +191,9 @@ impl<'a> Engine<'a> {
         if self.active_positions.len() >= self.params.max_active_pairs {
             return;
         }
+        // Buffer (in trading days) before expiry during which we avoid opening new positions.
+        const ENTRY_EXPIRY_BUFFER: usize = 7;
+        let cur_day = self.bar_count;
         for (cu, _oi_cu) in cu_contracts_today {
             for (fu, _oi_fu) in fu_contracts_today {
                 let pair = (cu.clone(), fu.clone());
@@ -198,6 +201,27 @@ impl<'a> Engine<'a> {
                     return;
                 }
                 if self.active_positions.contains_key(&pair) {
+                    continue;
+                }
+
+                // Skip if either contract will expire within the buffer window.
+                let near_expiry_cu = self
+                    .contract_last_day
+                    .get(cu)
+                    .map(|last| *last <= cur_day + ENTRY_EXPIRY_BUFFER)
+                    .unwrap_or(false);
+                let near_expiry_fu = self
+                    .contract_last_day
+                    .get(fu)
+                    .map(|last| *last <= cur_day + ENTRY_EXPIRY_BUFFER)
+                    .unwrap_or(false);
+                if near_expiry_cu || near_expiry_fu {
+                    if self.params.debug {
+                        eprintln!(
+                            "Skip entry {:?} due to impending expiry (cu_expiring={}, fu_expiring={})",
+                            pair, near_expiry_cu, near_expiry_fu
+                        );
+                    }
                     continue;
                 }
                 let hist = match self.spread_histories.get(&pair) {
@@ -211,6 +235,7 @@ impl<'a> Engine<'a> {
                     Some(v) => v,
                     None => continue,
                 };
+
                 if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
                     eprintln!(
                         "Candidate {:?} z={:.3} (threshold {})",
