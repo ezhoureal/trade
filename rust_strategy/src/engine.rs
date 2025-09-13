@@ -156,14 +156,10 @@ impl<'a> Engine<'a> {
                 Some(h) => h,
                 None => continue,
             };
-            let (z, _) = match self.calc_z(hist) {
-                Some(v) => v,
-                None => continue,
-            };
-            let mut trade_ret = z - pos.entry_z;
-            if pos.kind == PositionKind::ShortSpread {
-                trade_ret = -trade_ret;
-            }
+            let (z, last_spread) = match self.calc_z(hist) { Some(v) => v, None => continue };
+            // Price-based PnL: spread move (exit - entry); invert for short spread
+            let raw_diff = last_spread - pos.entry_spread;
+            let trade_ret = match pos.kind { PositionKind::LongSpread => raw_diff, PositionKind::ShortSpread => -raw_diff };
             self.equity += trade_ret;
             let stats = self
                 .pair_stats
@@ -281,20 +277,11 @@ impl<'a> Engine<'a> {
         for pair in to_close {
             if let Some(pos) = self.active_positions.remove(&pair) {
                 // Mark reason as expiry; compute current z if possible else zero PnL (flat)
-                let z_now = self
-                    .spread_histories
-                    .get(&pair)
-                    .and_then(|h| self.calc_z(h).map(|(z, _)| z));
-                let trade_ret = match z_now {
-                    Some(z) => {
-                        let mut tr = z - pos.entry_z;
-                        if pos.kind == PositionKind::ShortSpread {
-                            tr = -tr;
-                        }
-                        tr
-                    }
-                    None => 0.0,
-                };
+                let (z_now, last_spread_opt) = if let Some(hist) = self.spread_histories.get(&pair) { self.calc_z(hist).map(|(z, ls)| (Some(z), Some(ls))) .unwrap_or((None,None)) } else { (None,None) };
+                let trade_ret = if let Some(last_spread) = last_spread_opt {
+                    let raw_diff = last_spread - pos.entry_spread;
+                    match pos.kind { PositionKind::LongSpread => raw_diff, PositionKind::ShortSpread => -raw_diff }
+                } else { 0.0 };
                 self.equity += trade_ret;
                 let stats = self
                     .pair_stats
