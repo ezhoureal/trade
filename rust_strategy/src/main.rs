@@ -182,6 +182,5 @@ fn main() -> Result<()> {
         std::fs::write(path, json)?;
         println!("Wrote output JSON to {}", path);
     }
-
     Ok(())
 }

@@ -5,6 +5,7 @@ use ahash::AHasher;
 use anyhow::Result;
 use chrono::NaiveDate;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
@@ -153,7 +154,7 @@ impl<'a> Engine<'a> {
             if let Some(hist) = self.spread_histories.get(pair) {
                 if hist.len() >= self.params.lookback_zscore {
                     if let Some((z, _)) = self.calc_z(hist) {
-                        if z.abs() < self.params.exit_z || z.abs() > 3.0 {
+                        if z.abs() < self.params.exit_z || z.abs() > 5.0 {
                             to_close.push(pair.clone());
                         }
                     }
@@ -672,6 +673,15 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     }
 
     println!("Total trades: {}, Winning: {}, Losing: {}, Win rate: {:.2}%", total_trades, winning_trades, losing_trades, win_rate * 100.0);
+
+    // Sort trade log so the largest magnitude winners/losers appear first (big losses & big gains).
+    engine.trade_log.sort_by(|a, b| {
+        b.ret
+            .abs()
+            .partial_cmp(&a.ret.abs())
+            .unwrap_or(Ordering::Equal)
+    });
+
     Ok(EngineResult {
         total_return: engine.equity,
         sharpe_ratio,
