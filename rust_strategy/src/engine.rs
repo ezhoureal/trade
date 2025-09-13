@@ -207,6 +207,38 @@ fn try_enter_positions(
     }
 }
 
+// Helper to process a single dataframe row, inserting prices and optional OI ranked candidates.
+// Returns None if required values (contract/close) are missing so caller can use `let _ = process_row(...);`.
+fn process_row(
+    contract: Option<&str>,
+    close: Option<f64>,
+    oi: Option<f64>,
+    cu_prices: &mut HashMap<String, f64>,
+    fu_prices: &mut HashMap<String, f64>,
+    cu_contracts_today: &mut Vec<(String, f64)>,
+    fu_contracts_today: &mut Vec<(String, f64)>,
+) -> Option<()> {
+    let contract = contract?;
+    let close = close?;
+
+    if contract.starts_with("cu") {
+        cu_prices.insert(contract.to_string(), close);
+    } else if contract.starts_with("fu") {
+        fu_prices.insert(contract.to_string(), close);
+    } else {
+        return Some(()); // ignore other prefixes
+    }
+
+    if let Some(oi_val) = oi {
+        if contract.starts_with("cu") {
+            cu_contracts_today.push((contract.to_string(), oi_val));
+        } else if contract.starts_with("fu") {
+            fu_contracts_today.push((contract.to_string(), oi_val));
+        }
+    }
+    Some(())
+}
+
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     let md = load_market_data(path)?;
     if params.debug {
@@ -275,23 +307,18 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         let mut fu_contracts_today: Vec<(String, f64)> = Vec::new();
 
         for &i in indices {
-            if let (Some(contract), Some(close)) = (contract_series.get(i), close_series.get(i)) {
-                if contract.starts_with("cu") {
-                    cu_prices.insert(contract.to_string(), close);
-                } else if contract.starts_with("fu") {
-                    fu_prices.insert(contract.to_string(), close);
-                }
-
-                if let Some(oi_col) = &oi_series {
-                    if let Some(oi_val) = oi_col.get(i) {
-                        if contract.starts_with("cu") {
-                            cu_contracts_today.push((contract.to_string(), oi_val));
-                        } else if contract.starts_with("fu") {
-                            fu_contracts_today.push((contract.to_string(), oi_val));
-                        }
-                    }
-                }
-            }
+            let contract = contract_series.get(i);
+            let close = close_series.get(i);
+            let oi_val = oi_series.and_then(|col| col.get(i));
+            let _ = process_row(
+                contract,
+                close,
+                oi_val,
+                &mut cu_prices,
+                &mut fu_prices,
+                &mut cu_contracts_today,
+                &mut fu_contracts_today,
+            );
         }
 
         // Sort by OI and take top 3 each (if OI available). If OI absent, fallback to all seen contracts today.
