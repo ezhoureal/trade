@@ -1710,6 +1710,7 @@ dependencies = [
  "chrono",
  "clap",
  "polars",
+ "rayon",
  "serde",
  "serde_json",
 ]
