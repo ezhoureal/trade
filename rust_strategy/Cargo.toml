@@ -1,0 +1,24 @@
+[package]
+name = "rust_strategy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+
+[dependencies]
+polars = { version = "0.43", features = ["lazy", "parquet", "dtype-date", "fmt"] }
+chrono = { version = "0.4", features=["serde"] }
+clap = { version = "4.5", features=["derive"] }
+serde = { version = "1", features=["derive"] }
+serde_json = "1"
+anyhow = "1"
+ahash = "0.8"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+strip = true
+
+[profile.dev]
+incremental = true
