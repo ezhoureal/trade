@@ -56,58 +56,155 @@ struct Position {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-enum PositionKind { LongSpread, ShortSpread }
+enum PositionKind {
+    LongSpread,
+    ShortSpread,
+}
 
 // Helper: compute mean, std, z of last value; returns (z, last_spread)
 fn calc_z(hist: &VecDeque<f64>) -> Option<(f64, f64)> {
-    if hist.is_empty() { return None; }
+    if hist.is_empty() {
+        return None;
+    }
     let len = hist.len();
     let mean = hist.iter().copied().sum::<f64>() / len as f64;
-    let var = hist.iter().map(|v| { let d = v - mean; d*d }).sum::<f64>() / len as f64;
+    let var = hist
+        .iter()
+        .map(|v| {
+            let d = v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / len as f64;
     let std = var.sqrt();
-    if std == 0.0 { return None; }
+    if std == 0.0 {
+        return None;
+    }
     let last = *hist.back().unwrap();
     Some(((last - mean) / std, last))
 }
 
-fn push_spread(spread_histories: &mut HashMap<(String,String), VecDeque<f64>>, pair: (String,String), spread: f64, lookback: usize, debug: bool) {
-    let entry = spread_histories.entry(pair.clone()).or_insert_with(|| VecDeque::with_capacity(lookback));
-    if entry.len() == lookback { entry.pop_front(); }
+fn push_spread(
+    spread_histories: &mut HashMap<(String, String), VecDeque<f64>>,
+    pair: (String, String),
+    spread: f64,
+    lookback: usize,
+    debug: bool,
+) {
+    let entry = spread_histories
+        .entry(pair.clone())
+        .or_insert_with(|| VecDeque::with_capacity(lookback));
+    if entry.len() == lookback {
+        entry.pop_front();
+    }
     entry.push_back(spread);
-    if debug && entry.len() == lookback { eprintln!("Pair {:?} reached lookback with last spread {:.4}", pair, spread); }
+    if debug && entry.len() == lookback {
+        eprintln!(
+            "Pair {:?} reached lookback with last spread {:.4}",
+            pair, spread
+        );
+    }
 }
 
 fn close_positions(
-    active_positions: &mut HashMap<(String,String), Position>,
-    spread_histories: &HashMap<(String,String), VecDeque<f64>>,
-    pair_stats: &mut HashMap<(String,String), PairStats>,
+    active_positions: &mut HashMap<(String, String), Position>,
+    spread_histories: &HashMap<(String, String), VecDeque<f64>>,
+    pair_stats: &mut HashMap<(String, String), PairStats>,
     trade_log: &mut Vec<TradeLogEntry>,
     bar_count: usize,
     params: &Params,
     equity: &mut f64,
 ) {
-    let mut to_close: Vec<(String,String)> = Vec::new();
+    let mut to_close: Vec<(String, String)> = Vec::new();
     for (pair, _pos) in active_positions.iter() {
         if let Some(hist) = spread_histories.get(pair) {
-            if hist.len() >= params.lookback_zscore { if let Some((z, _last)) = calc_z(hist) {
-                if z.abs() < params.exit_z || z.abs() > 5.0 { to_close.push(pair.clone()); }
-            }}
+            if hist.len() >= params.lookback_zscore {
+                if let Some((z, _last)) = calc_z(hist) {
+                    if z.abs() < params.exit_z || z.abs() > 5.0 {
+                        to_close.push(pair.clone());
+                    }
+                }
+            }
         }
     }
-    for pair in to_close { if let Some(pos) = active_positions.remove(&pair) { if let Some(hist) = spread_histories.get(&pair) { if let Some((z, _last_spread)) = calc_z(hist) { let mut trade_ret = z - pos.entry_z; if pos.kind == PositionKind::ShortSpread { trade_ret = -trade_ret; } *equity += trade_ret; let stats = pair_stats.entry(pair.clone()).or_insert_with(|| PairStats::new(params.lookback_performance)); stats.record(trade_ret, bar_count); trade_log.push(TradeLogEntry { pair: format!("{}/{}", pair.0, pair.1), kind: match pos.kind { PositionKind::LongSpread=>"long_spread".into(), PositionKind::ShortSpread=>"short_spread".into() }, entry_bar: pos.entry_bar, exit_bar: bar_count, entry_z: pos.entry_z, exit_z: z, ret: trade_ret, reason: "reversion".into(), trade_id: pos.trade_id }); } }} }
+    for pair in to_close {
+        let pos = match active_positions.remove(&pair) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let hist = match spread_histories.get(&pair) {
+            Some(h) => h,
+            None => continue,
+        };
+
+        let (z, _last_spread) = match calc_z(hist) {
+            Some(val) => val,
+            None => continue,
+        };
+
+        let mut trade_ret = z - pos.entry_z;
+        if pos.kind == PositionKind::ShortSpread {
+            trade_ret = -trade_ret;
+        }
+
+        *equity += trade_ret;
+        let stats = pair_stats
+            .entry(pair.clone())
+            .or_insert_with(|| PairStats::new(params.lookback_performance));
+        stats.record(trade_ret, bar_count);
+
+        trade_log.push(TradeLogEntry {
+            pair: format!("{}/{}", pair.0, pair.1),
+            kind: match pos.kind {
+                PositionKind::LongSpread => "long_spread".into(),
+                PositionKind::ShortSpread => "short_spread".into(),
+            },
+            entry_bar: pos.entry_bar,
+            exit_bar: bar_count,
+            entry_z: pos.entry_z,
+            exit_z: z,
+            ret: trade_ret,
+            reason: "reversion".into(),
+            trade_id: pos.trade_id,
+        });
+    }
 }
 
 fn try_enter_positions(
-    active_positions: &mut HashMap<(String,String), Position>,
-    spread_histories: &HashMap<(String,String), VecDeque<f64>>,
-    cu_contracts_today: &[(String,f64)],
-    fu_contracts_today: &[(String,f64)],
+    active_positions: &mut HashMap<(String, String), Position>,
+    spread_histories: &HashMap<(String, String), VecDeque<f64>>,
+    cu_contracts_today: &[(String, f64)],
+    fu_contracts_today: &[(String, f64)],
     params: &Params,
     bar_count: usize,
     debug: bool,
 ) {
-    if active_positions.len() >= params.max_active_pairs { return; }
-    for (cu, _oi_cu) in cu_contracts_today { for (fu, _oi_fu) in fu_contracts_today { let pair = (cu.clone(), fu.clone()); if active_positions.contains_key(&pair) { continue; } if let Some(hist) = spread_histories.get(&pair) { if hist.len() < params.lookback_zscore { continue; } if let Some((z, last_spread)) = calc_z(hist) { if debug && z.abs() > params.entry_z * 0.5 { eprintln!("Candidate {:?} z={:.3} (threshold {})", pair, z, params.entry_z); } if z.abs() <= params.entry_z { continue; } let mut hasher = AHasher::default(); format!("{}_{}", cu, fu).hash(&mut hasher); let trade_id = hasher.finish(); let kind = if z > 0.0 { PositionKind::ShortSpread } else { PositionKind::LongSpread }; if debug { eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z); } active_positions.insert(pair.clone(), Position { pair: pair.clone(), kind, entry_z: z, entry_bar: bar_count, entry_spread: last_spread, size: ((z.abs()*2.0).floor() as u32).max(1).min(10), trade_id }); } } }}
+    if active_positions.len() >= params.max_active_pairs {
+        return;
+    }
+    for (cu, _oi_cu) in cu_contracts_today {
+        for (fu, _oi_fu) in fu_contracts_today {
+            let pair = (cu.clone(), fu.clone());
+            if active_positions.len() >= params.max_active_pairs { return; }
+            if active_positions.contains_key(&pair) { continue; }
+
+            let hist = match spread_histories.get(&pair) { Some(h) => h, None => continue };
+            if hist.len() < params.lookback_zscore { continue; }
+            let (z, last_spread) = match calc_z(hist) { Some(v) => v, None => continue };
+            if debug && z.abs() > params.entry_z * 0.5 {
+                eprintln!("Candidate {:?} z={:.3} (threshold {})", pair, z, params.entry_z);
+            }
+            if z.abs() <= params.entry_z { continue; }
+
+            let mut hasher = AHasher::default();
+            format!("{}_{}", cu, fu).hash(&mut hasher);
+            let trade_id = hasher.finish();
+            let kind = if z > 0.0 { PositionKind::ShortSpread } else { PositionKind::LongSpread };
+            if debug { eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z); }
+            active_positions.insert(pair.clone(), Position { pair: pair.clone(), kind, entry_z: z, entry_bar: bar_count, entry_spread: last_spread, size: ((z.abs()*2.0).floor() as u32).max(1).min(10), trade_id });
+        }
+    }
 }
 
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
@@ -232,11 +329,41 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         }
 
         // Update spreads
-        for (cu,_oi_cu) in &cu_contracts_today { if let Some(&cu_p) = cu_prices.get(cu) { for (fu,_oi_fu) in &fu_contracts_today { if let Some(&fu_p) = fu_prices.get(fu) { push_spread(&mut spread_histories, (cu.clone(), fu.clone()), cu_p - fu_p, params.lookback_zscore, params.debug); }}}}
+        for (cu, _oi_cu) in &cu_contracts_today {
+            if let Some(&cu_p) = cu_prices.get(cu) {
+                for (fu, _oi_fu) in &fu_contracts_today {
+                    if let Some(&fu_p) = fu_prices.get(fu) {
+                        push_spread(
+                            &mut spread_histories,
+                            (cu.clone(), fu.clone()),
+                            cu_p - fu_p,
+                            params.lookback_zscore,
+                            params.debug,
+                        );
+                    }
+                }
+            }
+        }
 
-        close_positions(&mut active_positions, &spread_histories, &mut pair_stats, &mut trade_log, bar_count, params, &mut equity);
+        close_positions(
+            &mut active_positions,
+            &spread_histories,
+            &mut pair_stats,
+            &mut trade_log,
+            bar_count,
+            params,
+            &mut equity,
+        );
 
-        try_enter_positions(&mut active_positions, &spread_histories, &cu_contracts_today, &fu_contracts_today, params, bar_count, params.debug);
+        try_enter_positions(
+            &mut active_positions,
+            &spread_histories,
+            &cu_contracts_today,
+            &fu_contracts_today,
+            params,
+            bar_count,
+            params.debug,
+        );
 
         equity_curve.push(equity);
     }
