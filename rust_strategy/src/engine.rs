@@ -218,8 +218,8 @@ impl<'a> Engine<'a> {
 
     fn try_enter_positions(
         &mut self,
-        cu_contracts_today: &[(String, f64)],
-        fu_contracts_today: &[(String, f64)],
+        a_contracts_today: &[(String, f64)],
+        b_contracts_today: &[(String, f64)],
     ) {
         if self.active_positions.len() >= self.params.max_active_pairs {
             return;
@@ -239,9 +239,9 @@ impl<'a> Engine<'a> {
         let cur_day = self.bar_count;
         // Current total equity notionally: starting_capital + realized equity change (self.equity)
         let current_total_equity = self.starting_capital + self.equity;
-        for (cu, _oi_cu) in cu_contracts_today {
-            for (fu, _oi_fu) in fu_contracts_today {
-                let pair = (cu.clone(), fu.clone());
+        for (a, _oi_a) in a_contracts_today {
+            for (b, _oi_b) in b_contracts_today {
+                let pair = (a.clone(), b.clone());
                 if self.active_positions.len() >= self.params.max_active_pairs {
                     return;
                 }
@@ -250,21 +250,21 @@ impl<'a> Engine<'a> {
                 }
 
                 // Skip if either contract will expire within the buffer window.
-                let near_expiry_cu = self
+                let near_expiry_a = self
                     .contract_last_day
-                    .get(cu)
+                    .get(a)
                     .map(|last| *last <= cur_day + ENTRY_EXPIRY_BUFFER)
                     .unwrap_or(false);
-                let near_expiry_fu = self
+                let near_expiry_b = self
                     .contract_last_day
-                    .get(fu)
+                    .get(b)
                     .map(|last| *last <= cur_day + ENTRY_EXPIRY_BUFFER)
                     .unwrap_or(false);
-                if near_expiry_cu || near_expiry_fu {
+                if near_expiry_a || near_expiry_b {
                     if self.params.debug {
                         eprintln!(
-                            "Skip entry {:?} due to impending expiry (cu_expiring={}, fu_expiring={})",
-                            pair, near_expiry_cu, near_expiry_fu
+                            "Skip entry {:?} due to impending expiry (a_expiring={}, b_expiring={})",
+                            pair, near_expiry_a, near_expiry_b
                         );
                     }
                     continue;
@@ -315,7 +315,7 @@ impl<'a> Engine<'a> {
                     continue;
                 }
                 let mut hasher = AHasher::default();
-                format!("{}_{}", cu, fu).hash(&mut hasher);
+                format!("{}_{}", a, b).hash(&mut hasher);
                 let trade_id = hasher.finish();
                 let kind = if z > 0.0 {
                     PositionKind::ShortSpread
@@ -449,34 +449,36 @@ fn process_row(
     contract: Option<&str>,
     close: Option<f64>,
     oi: Option<f64>,
-    cu_prices: &mut HashMap<String, f64>,
-    fu_prices: &mut HashMap<String, f64>,
-    cu_contracts_today: &mut Vec<(String, f64)>,
-    fu_contracts_today: &mut Vec<(String, f64)>,
+    a_prefix: &str,
+    b_prefix: &str,
+    a_prices: &mut HashMap<String, f64>,
+    b_prices: &mut HashMap<String, f64>,
+    a_contracts_today: &mut Vec<(String, f64)>,
+    b_contracts_today: &mut Vec<(String, f64)>,
 ) -> Option<()> {
     let contract = contract?;
     let close = close?;
 
-    if contract.starts_with("cu") {
-        cu_prices.insert(contract.to_string(), close);
-    } else if contract.starts_with("fu") {
-        fu_prices.insert(contract.to_string(), close);
+    if contract.starts_with(a_prefix) {
+        a_prices.insert(contract.to_string(), close);
+    } else if contract.starts_with(b_prefix) {
+        b_prices.insert(contract.to_string(), close);
     } else {
         return Some(()); // ignore other prefixes
     }
 
     if let Some(oi_val) = oi {
-        if contract.starts_with("cu") {
-            cu_contracts_today.push((contract.to_string(), oi_val));
-        } else if contract.starts_with("fu") {
-            fu_contracts_today.push((contract.to_string(), oi_val));
+        if contract.starts_with(a_prefix) {
+            a_contracts_today.push((contract.to_string(), oi_val));
+        } else if contract.starts_with(b_prefix) {
+            b_contracts_today.push((contract.to_string(), oi_val));
         }
     }
     Some(())
 }
 
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
-    let md = load_market_data(path)?;
+    let md = load_market_data(path, &params.commodity_a_prefix, &params.commodity_b_prefix)?;
     if params.debug {
         eprintln!(
             "Loaded DataFrame: rows={}, cols={}",
@@ -551,10 +553,10 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         }
 
         // Collect today's prices and OI
-        let mut cu_prices: HashMap<String, f64> = HashMap::new();
-        let mut fu_prices: HashMap<String, f64> = HashMap::new();
-        let mut cu_contracts_today: Vec<(String, f64)> = Vec::new();
-        let mut fu_contracts_today: Vec<(String, f64)> = Vec::new();
+        let mut a_prices: HashMap<String, f64> = HashMap::new();
+        let mut b_prices: HashMap<String, f64> = HashMap::new();
+        let mut a_contracts_today: Vec<(String, f64)> = Vec::new();
+        let mut b_contracts_today: Vec<(String, f64)> = Vec::new();
 
         for &i in indices {
             let contract = contract_series.get(i);
@@ -564,41 +566,43 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
                 contract,
                 close,
                 oi_val,
-                &mut cu_prices,
-                &mut fu_prices,
-                &mut cu_contracts_today,
-                &mut fu_contracts_today,
+                &params.commodity_a_prefix,
+                &params.commodity_b_prefix,
+                &mut a_prices,
+                &mut b_prices,
+                &mut a_contracts_today,
+                &mut b_contracts_today,
             );
         }
 
         // Sort by OI and take top 3 each (if OI available). If OI absent, fallback to all seen contracts today.
-        if !cu_contracts_today.is_empty() {
-            cu_contracts_today
+        if !a_contracts_today.is_empty() {
+            a_contracts_today
                 .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            cu_contracts_today.truncate(3);
+            a_contracts_today.truncate(3);
         } else {
-            // fallback: all cu_prices keys
-            for k in cu_prices.keys() {
-                cu_contracts_today.push((k.clone(), 0.0));
+            // fallback: all a_prices keys
+            for k in a_prices.keys() {
+                a_contracts_today.push((k.clone(), 0.0));
             }
         }
-        if !fu_contracts_today.is_empty() {
-            fu_contracts_today
+        if !b_contracts_today.is_empty() {
+            b_contracts_today
                 .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            fu_contracts_today.truncate(3);
+            b_contracts_today.truncate(3);
         } else {
-            for k in fu_prices.keys() {
-                fu_contracts_today.push((k.clone(), 0.0));
+            for k in b_prices.keys() {
+                b_contracts_today.push((k.clone(), 0.0));
             }
         }
         if params.debug && engine.bar_count <= 5 {
             eprintln!(
-                "Top cu today: {:?}; Top fu today: {:?}",
-                cu_contracts_today
+                "Top a today: {:?}; Top b today: {:?}",
+                a_contracts_today
                     .iter()
                     .map(|(c, _)| c)
                     .collect::<Vec<_>>(),
-                fu_contracts_today
+                b_contracts_today
                     .iter()
                     .map(|(c, _)| c)
                     .collect::<Vec<_>>()
@@ -606,11 +610,11 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         }
 
         // Update spreads
-        for (cu, _oi_cu) in &cu_contracts_today {
-            if let Some(&cu_p) = cu_prices.get(cu) {
-                for (fu, _oi_fu) in &fu_contracts_today {
-                    if let Some(&fu_p) = fu_prices.get(fu) {
-                        engine.push_spread((cu.clone(), fu.clone()), cu_p - fu_p);
+        for (a, _oi_a) in &a_contracts_today {
+            if let Some(&a_p) = a_prices.get(a) {
+                for (b, _oi_b) in &b_contracts_today {
+                    if let Some(&b_p) = b_prices.get(b) {
+                        engine.push_spread((a.clone(), b.clone()), a_p - b_p);
                     }
                 }
             }
@@ -620,7 +624,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         engine.close_expiring_positions();
         // Then normal mean reversion closures
         engine.close_positions();
-        engine.try_enter_positions(&cu_contracts_today, &fu_contracts_today);
+        engine.try_enter_positions(&a_contracts_today, &b_contracts_today);
         engine.equity_curve.push(engine.equity);
     }
 

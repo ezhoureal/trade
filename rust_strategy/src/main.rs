@@ -25,7 +25,7 @@ struct OutputSummary {
 #[derive(Parser, Debug)]
 #[command(
     name = "rust_strategy",
-    about = "Dynamic Copper-Fuel Oil Pairs Strategy (Rust)"
+    about = "Dynamic Generic Commodity Pair Strategy (Rust)"
 )]
 struct Cli {
     /// Path to parquet file or directory of parquet files
@@ -60,6 +60,14 @@ struct Cli {
     #[arg(long = "expiry-close-days", default_value_t = 3)]
     expiry_close_days: usize,
 
+    /// Commodity A prefix (e.g. cu)
+    #[arg(long = "commodity-a", default_value = "cu")]
+    commodity_a: String,
+
+    /// Commodity B prefix (e.g. fu)
+    #[arg(long = "commodity-b", default_value = "fu")]
+    commodity_b: String,
+
     /// Optional output JSON file path (if omitted, only stdout is used)
     #[arg(long = "out", short = 'o')]
     out: Option<String>,
@@ -78,6 +86,8 @@ fn main() -> Result<()> {
         min_volume_threshold: 50,
         expiry_close_days: cli.expiry_close_days,
         debug: cli.debug,
+        commodity_a_prefix: cli.commodity_a.clone(),
+        commodity_b_prefix: cli.commodity_b.clone(),
     };
 
     let result = run_engine(&cli.data, &params)?;
