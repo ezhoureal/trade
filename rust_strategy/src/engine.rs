@@ -17,6 +17,7 @@ pub struct TradeLogEntry {
     pub entry_z: f64,
     pub exit_z: f64,
     pub ret: f64,
+    pub pct_move: f64,
     pub reason: String,
     pub trade_id: u64,
 }
@@ -31,6 +32,7 @@ pub struct EngineResult {
     pub win_rate: f64,
     pub max_drawdown: f64,
     pub final_value: f64,
+    pub max_concurrent_positions: usize,
     pub pair_performance: HashMap<String, PairPerf>,
     pub trade_log: Vec<TradeLogEntry>,
 }
@@ -54,6 +56,7 @@ struct Position {
     entry_spread: f64,
     size: u32,
     trade_id: u64,
+    capital_committed: f64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -73,6 +76,10 @@ struct Engine<'a> {
     equity: f64,
     equity_curve: Vec<f64>,
     contract_last_day: HashMap<String, usize>,
+    max_concurrent: usize,
+    starting_capital: f64,
+    cash: f64,
+    invested_capital: f64,
 }
 
 impl<'a> Engine<'a> {
@@ -88,6 +95,10 @@ impl<'a> Engine<'a> {
             equity: 0.0,
             equity_curve: Vec::new(),
             contract_last_day: HashMap::new(),
+            max_concurrent: 0,
+            starting_capital: 100_000.0,
+            cash: 100_000.0,
+            invested_capital: 0.0,
         }
     }
 }
@@ -156,11 +167,28 @@ impl<'a> Engine<'a> {
                 Some(h) => h,
                 None => continue,
             };
-            let (z, last_spread) = match self.calc_z(hist) { Some(v) => v, None => continue };
+            let (z, last_spread) = match self.calc_z(hist) {
+                Some(v) => v,
+                None => continue,
+            };
             // Price-based PnL: spread move (exit - entry); invert for short spread
             let raw_diff = last_spread - pos.entry_spread;
-            let trade_ret = match pos.kind { PositionKind::LongSpread => raw_diff, PositionKind::ShortSpread => -raw_diff };
+            // Scale price spread movement by capital committed. Interpret raw_diff relative to entry_spread
+            // to approximate percentage move; guard against division by near-zero.
+            let pct_move = if pos.entry_spread.abs() > 1e-9 {
+                raw_diff / pos.entry_spread
+            } else {
+                0.0
+            };
+            let directional = match pos.kind {
+                PositionKind::LongSpread => pct_move,
+                PositionKind::ShortSpread => -pct_move,
+            };
+            let trade_ret = directional * pos.capital_committed; // monetary PnL
             self.equity += trade_ret;
+            // Release capital and add PnL to cash
+            self.invested_capital -= pos.capital_committed;
+            self.cash += pos.capital_committed + trade_ret;
             let stats = self
                 .pair_stats
                 .entry(pair.clone())
@@ -177,6 +205,7 @@ impl<'a> Engine<'a> {
                 entry_z: pos.entry_z,
                 exit_z: z,
                 ret: trade_ret,
+                pct_move: directional,
                 reason: "reversion".into(),
                 trade_id: pos.trade_id,
             });
@@ -191,9 +220,21 @@ impl<'a> Engine<'a> {
         if self.active_positions.len() >= self.params.max_active_pairs {
             return;
         }
+        // If we've exhausted cash, we cannot open any new positions regardless of signals.
+        if self.cash <= 0.0 {
+            if self.params.debug {
+                eprintln!(
+                    "No cash available: skipping new entries (cash={:.2})",
+                    self.cash
+                );
+            }
+            return;
+        }
         // Buffer (in trading days) before expiry during which we avoid opening new positions.
         const ENTRY_EXPIRY_BUFFER: usize = 7;
         let cur_day = self.bar_count;
+        // Current total equity notionally: starting_capital + realized equity change (self.equity)
+        let current_total_equity = self.starting_capital + self.equity;
         for (cu, _oi_cu) in cu_contracts_today {
             for (fu, _oi_fu) in fu_contracts_today {
                 let pair = (cu.clone(), fu.clone());
@@ -245,6 +286,30 @@ impl<'a> Engine<'a> {
                 if z.abs() <= self.params.entry_z {
                     continue;
                 }
+                // Capital allocation: up to 80% of current total equity per new position.
+                // But cannot exceed remaining cash. This enforces hard cash constraint.
+                let desired_allocation = 0.8 * current_total_equity;
+                let allocation = desired_allocation.min(self.cash);
+                // If remaining cash is extremely small (e.g., dust), skip to avoid opening meaningless position.
+                if allocation <= 0.0 {
+                    if self.params.debug {
+                        eprintln!(
+                            "Zero effective allocation for {:?}; cash={:.2}",
+                            pair, self.cash
+                        );
+                    }
+                    continue;
+                }
+                // Optional: require at least 1% of starting capital for practicality.
+                if allocation < 0.01 * self.starting_capital {
+                    if self.params.debug {
+                        eprintln!(
+                            "Allocation below minimum threshold for {:?}: {:.2}",
+                            pair, allocation
+                        );
+                    }
+                    continue;
+                }
                 let mut hasher = AHasher::default();
                 format!("{}_{}", cu, fu).hash(&mut hasher);
                 let trade_id = hasher.finish();
@@ -256,6 +321,8 @@ impl<'a> Engine<'a> {
                 if self.params.debug {
                     eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z);
                 }
+                self.cash -= allocation;
+                self.invested_capital += allocation;
                 self.active_positions.insert(
                     pair.clone(),
                     Position {
@@ -266,8 +333,13 @@ impl<'a> Engine<'a> {
                         entry_spread: last_spread,
                         size: ((z.abs() * 2.0).floor() as u32).max(1).min(10),
                         trade_id,
+                        capital_committed: allocation,
                     },
                 );
+                let cur_len = self.active_positions.len();
+                if cur_len > self.max_concurrent {
+                    self.max_concurrent = cur_len;
+                }
             }
         }
     }
@@ -302,12 +374,32 @@ impl<'a> Engine<'a> {
         for pair in to_close {
             if let Some(pos) = self.active_positions.remove(&pair) {
                 // Mark reason as expiry; compute current z if possible else zero PnL (flat)
-                let (z_now, last_spread_opt) = if let Some(hist) = self.spread_histories.get(&pair) { self.calc_z(hist).map(|(z, ls)| (Some(z), Some(ls))) .unwrap_or((None,None)) } else { (None,None) };
+                let (z_now, last_spread_opt) = if let Some(hist) = self.spread_histories.get(&pair)
+                {
+                    self.calc_z(hist)
+                        .map(|(z, ls)| (Some(z), Some(ls)))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
                 let trade_ret = if let Some(last_spread) = last_spread_opt {
                     let raw_diff = last_spread - pos.entry_spread;
-                    match pos.kind { PositionKind::LongSpread => raw_diff, PositionKind::ShortSpread => -raw_diff }
-                } else { 0.0 };
+                    let pct_move = if pos.entry_spread.abs() > 1e-9 {
+                        raw_diff / pos.entry_spread
+                    } else {
+                        0.0
+                    };
+                    let directional = match pos.kind {
+                        PositionKind::LongSpread => pct_move,
+                        PositionKind::ShortSpread => -pct_move,
+                    };
+                    directional * pos.capital_committed
+                } else {
+                    0.0
+                };
                 self.equity += trade_ret;
+                self.invested_capital -= pos.capital_committed;
+                self.cash += pos.capital_committed + trade_ret;
                 let stats = self
                     .pair_stats
                     .entry(pair.clone())
@@ -324,6 +416,19 @@ impl<'a> Engine<'a> {
                     entry_z: pos.entry_z,
                     exit_z: z_now.unwrap_or(pos.entry_z),
                     ret: trade_ret,
+                    pct_move: if let Some(last_spread) = last_spread_opt {
+                        if pos.entry_spread.abs() > 1e-9 {
+                            (last_spread - pos.entry_spread) / pos.entry_spread
+                                * match pos.kind {
+                                    PositionKind::LongSpread => 1.0,
+                                    PositionKind::ShortSpread => -1.0,
+                                }
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    },
                     reason: "expiry".into(),
                     trade_id: pos.trade_id,
                 });
@@ -582,7 +687,10 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         losing_trades,
         win_rate,
         max_drawdown: max_dd,
-        final_value: 100000.0 * (1.0 + engine.equity / 100.0),
+        // Final value approximation: current cash + capital still tied in open positions (at cost basis).
+        // NOTE: Unrealized PnL on open positions is not marked-to-market here; could be added later.
+        final_value: engine.cash + engine.invested_capital,
+        max_concurrent_positions: engine.max_concurrent,
         pair_performance,
         trade_log: engine.trade_log,
     })
