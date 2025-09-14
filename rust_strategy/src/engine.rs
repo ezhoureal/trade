@@ -79,6 +79,8 @@ struct Engine<'a> {
     contract_last_day: HashMap<String, usize>,
     max_concurrent: usize,
     cash: f64,
+    // Track today's volume per contract (if provided)
+    daily_volume: HashMap<String, u32>,
     // If commodity_a_prefix == commodity_b_prefix we operate in single commodity mode
     // and generate spreads from distinct contracts within the same commodity.
     single_commodity: bool,
@@ -100,6 +102,7 @@ impl<'a> Engine<'a> {
             contract_last_day: HashMap::new(),
             max_concurrent: 0,
             cash: STARTING_CASH,
+            daily_volume: HashMap::new(),
             single_commodity: single,
         }
     }
@@ -111,14 +114,8 @@ fn close_trade(pos: &Position, cur_price: f64) -> (f64, f64) {
     // trade_ret: realized PnL of the spread move * size
     let size_f = pos.size as f64;
     match pos.kind {
-        PositionKind::LongSpread => (
-            cur_price * size_f,
-            (cur_price - pos.entry_spread) * size_f,
-        ),
-        PositionKind::ShortSpread => (
-            -cur_price * size_f,
-            (pos.entry_spread - cur_price) * size_f,
-        ),
+        PositionKind::LongSpread => (cur_price * size_f, (cur_price - pos.entry_spread) * size_f),
+        PositionKind::ShortSpread => (-cur_price * size_f, (pos.entry_spread - cur_price) * size_f),
     }
 }
 
@@ -127,6 +124,28 @@ impl<'a> Engine<'a> {
         self.spread_histories
             .get(pair)
             .and_then(|hist| hist.back().copied())
+    }
+
+    // Gross exposure: sum of |spread| * size for all open positions using latest spread.
+    fn gross_exposure(&self) -> f64 {
+        self.active_positions
+            .iter()
+            .filter_map(|(pair, pos)| self.cur_price(pair).map(|p| p.abs() * pos.size as f64))
+            .sum()
+    }
+
+    // Net exposure: directional exposure treating long spread as +spread and short spread as -spread.
+    #[allow(dead_code)]
+    fn net_exposure(&self) -> f64 {
+        self.active_positions
+            .iter()
+            .filter_map(|(pair, pos)| {
+                self.cur_price(pair).map(|p| match pos.kind {
+                    PositionKind::LongSpread => p * pos.size as f64,
+                    PositionKind::ShortSpread => -p * pos.size as f64,
+                })
+            })
+            .sum()
     }
 
     // Common logic to finalize closing a position, updating equity, cash, stats, and logging.
@@ -279,7 +298,7 @@ impl<'a> Engine<'a> {
                 if hist.len() < self.params.lookback_zscore {
                     continue;
                 }
-                let (z, last_spread) = match self.calc_z(hist) {
+                let (z, cur_price) = match self.calc_z(hist) {
                     Some(v) => v,
                     None => continue,
                 };
@@ -299,13 +318,31 @@ impl<'a> Engine<'a> {
                     PositionKind::LongSpread
                 };
 
-                let maximum_allocation = self.cash.min(self.equity * 0.6);
-                let size = (maximum_allocation / last_spread).abs().floor() as u32;
-                if size == 0 {
+                if cur_price == 0.0 {
                     continue;
                 }
-                let cost = size as f64 * last_spread * -z.signum();
-                println!("Size for {:?} is {}, total cost = {}, cash = {}", pair, size, cost, self.cash);
+                // Exposure-based sizing: cap gross exposure at 3x current equity.
+                let safe_exposure = 3.0 * self.equity - self.gross_exposure();
+                let allocation = safe_exposure.min(self.equity * 0.60).min(self.cash);
+                let mut size: u32 = (allocation / cur_price.abs()).floor() as u32;
+
+                // Liquidity cap: limit notional size to 1% of daily volume of the less liquid leg (if volume available)
+                if let (Some(v_a), Some(v_b)) = (self.daily_volume.get(a), self.daily_volume.get(b))
+                {
+                    let vol_cap = (*v_a).min(*v_b) as f64 * 0.01; // 1% of lesser volume
+                    let vol_cap_u = vol_cap.floor() as u32;
+                    if vol_cap_u > 0 {
+                        size = size.min(vol_cap_u);
+                    }
+                }
+                if size <= 0 {
+                    continue;
+                }
+                let cost = size as f64 * cur_price * -z.signum();
+                println!(
+                    "ENTER candidate {:?} z={:.3} spread={:.3} size={}",
+                    pair, z, cur_price, size
+                );
                 self.cash -= cost; // cost can be negative
 
                 let mut hasher = AHasher::default();
@@ -321,7 +358,7 @@ impl<'a> Engine<'a> {
                         kind,
                         entry_z: z,
                         entry_bar: self.bar_count,
-                        entry_spread: last_spread,
+                        entry_spread: cur_price,
                         size: size,
                         trade_id,
                     },
@@ -412,9 +449,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
             md.df.width()
         );
     }
-    if params.debug {
-        eprintln!("Unique trading days: {}", md.trading_days.len());
-    }
+    println!("Unique trading days: {}", md.trading_days.len());
 
     // Pre-group day -> rows indices to avoid filtering repeatedly (simplified)
     // (Could optimize with polars groupby but keep simple for clarity.)
@@ -424,6 +459,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     let contract_series = md.df.column("Contract")?.str()?;
     let close_series = md.df.column("Close")?.f64()?;
     let oi_series = md.df.column("OI").ok().and_then(|s| s.f64().ok());
+    let vol_series = md.df.column("Volume").ok().and_then(|s| s.u32().ok());
     let date_series = md.df.column("Date")?; // assume date type or utf8 handled earlier
 
     // Extract dates as NaiveDate for each row
@@ -491,6 +527,12 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
             let contract = contract_series.get(i);
             let close = close_series.get(i);
             let oi_val = oi_series.and_then(|col| col.get(i));
+            if let Some(vol) = vol_series.and_then(|col| col.get(i)) {
+                if let Some(c) = contract {
+                    // Use per-row (per contract) volume; latest value wins for the day.
+                    engine.daily_volume.insert(c.to_string(), vol);
+                }
+            }
             let _ = process_row(
                 contract,
                 close,
@@ -682,7 +724,11 @@ mod tests {
         let pos = mk_pos(-210.0, PositionKind::LongSpread);
         let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
         // For a long spread we store raw_gain = cur_price * size (105)
-        assert!((raw_gain - 105.0).abs() < 1e-9, "expected raw_gain 105 got {}", raw_gain);
+        assert!(
+            (raw_gain - 105.0).abs() < 1e-9,
+            "expected raw_gain 105 got {}",
+            raw_gain
+        );
         assert!(
             (trade_ret - 315.0).abs() < 1e-9,
             "expected 315 trade_ret got {}",
@@ -696,7 +742,11 @@ mod tests {
         let pos = mk_pos(500.0, PositionKind::ShortSpread);
         let (raw_gain, trade_ret) = close_trade(&pos, 350.0);
         // For a short spread raw_gain = -cur_price * size (-350)
-        assert!((raw_gain + 350.0).abs() < 1e-9, "expected raw_gain -350 got {}", raw_gain);
+        assert!(
+            (raw_gain + 350.0).abs() < 1e-9,
+            "expected raw_gain -350 got {}",
+            raw_gain
+        );
         assert!(
             (trade_ret - 150.0).abs() < 1e-9,
             "expected 150 trade_ret got {}",
@@ -708,7 +758,11 @@ mod tests {
     fn percent_moved_zero_entry_protected() {
         let pos = mk_pos(0.0, PositionKind::LongSpread);
         let (raw_gain, trade_ret) = close_trade(&pos, 10.0);
-        assert!((raw_gain - 10.0).abs() < 1e-9, "expected raw_gain 10 got {}", raw_gain);
+        assert!(
+            (raw_gain - 10.0).abs() < 1e-9,
+            "expected raw_gain 10 got {}",
+            raw_gain
+        );
         // entry spread zero -> move = 10 - 0 = 10; still valid
         assert_eq!(trade_ret, 10.0);
     }
@@ -718,8 +772,16 @@ mod tests {
         // Entry spread -210, exit +105 -> raw move = 315, size=1 => return 315
         let pos = mk_pos(-210.0, PositionKind::LongSpread);
         let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
-        assert!((raw_gain - 105.0).abs() < 1e-9, "expected raw_gain 105 got {}", raw_gain);
-        assert!((trade_ret - 315.0).abs() < 1e-6, "expected 315 got {}", trade_ret);
+        assert!(
+            (raw_gain - 105.0).abs() < 1e-9,
+            "expected raw_gain 105 got {}",
+            raw_gain
+        );
+        assert!(
+            (trade_ret - 315.0).abs() < 1e-6,
+            "expected 315 got {}",
+            trade_ret
+        );
     }
 
     #[test]
