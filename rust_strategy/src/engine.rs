@@ -48,7 +48,7 @@ pub struct PairPerf {
 }
 
 #[allow(dead_code)] // some fields reserved for future sizing logic
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Position {
     pair: (String, String),
     kind: PositionKind,
@@ -392,6 +392,26 @@ impl<'a> Engine<'a> {
             }
         }
     }
+
+    fn stop_loss(&mut self) {
+        const LOSS_RATIO_THRESHOLD: f64 = 0.2;
+        let mut to_close: Vec<(String, String)> = Vec::new();
+        for (pair, pos) in self.active_positions.iter() {
+            let cur_price = self.cur_price(pair).unwrap();
+            let loss = match pos.kind {
+                PositionKind::LongSpread => pos.entry_spread - cur_price,
+                PositionKind::ShortSpread => cur_price - pos.entry_spread,
+            };
+            if loss / pos.entry_spread > LOSS_RATIO_THRESHOLD {
+                to_close.push(pair.clone());
+            }
+        }
+        for pair in to_close {
+            if let Some(pos) = self.active_positions.remove(&pair) {
+                let _ = self.finalize_close(pair, pos, "stop_loss");
+            }
+        }
+    }
 }
 
 // Helper to process a single dataframe row, inserting prices and optional OI ranked candidates.
@@ -451,13 +471,13 @@ fn calc_sharpe(equity_curve: &[f64]) -> f64 {
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     let md: crate::data::MarketData = load_market_data(path)?;
     if params.debug {
-        eprintln!(
+        println!(
             "Loaded DataFrame: rows={}, cols={}",
             md.df.height(),
             md.df.width()
         );
+        println!("Unique trading days: {}", md.trading_days.len());
     }
-    println!("Unique trading days: {}", md.trading_days.len());
 
     // Pre-group day -> rows indices to avoid filtering repeatedly (simplified)
     // (Could optimize with polars groupby but keep simple for clarity.)
@@ -597,6 +617,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
 
         // First close positions that are near expiry
         engine.close_expiring_positions();
+        engine.stop_loss();
         // Then normal mean reversion closures
         engine.close_positions();
         if engine.single_commodity {
@@ -681,8 +702,6 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         losing_trades,
         win_rate,
         max_drawdown: max_dd,
-        // Final value approximation: current cash + capital still tied in open positions (at cost basis).
-        // NOTE: Unrealized PnL on open positions is not marked-to-market here; could be added later.
         total_return: engine.equity - STARTING_CASH,
         max_concurrent_positions: engine.max_concurrent,
         pair_performance,

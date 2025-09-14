@@ -26,7 +26,7 @@ struct MultiPairResultEntry {
 struct MultiPairAggregate {
     pairs: Vec<MultiPairResultEntry>,
     ranked_by_sharpe: Vec<String>,
-    ranked_by_drawdown: Vec<String>,
+    ranked_by_return: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -180,14 +180,12 @@ fn main() -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // Prune pairs with negative Sharpe for ranking purposes (but keep full list in aggregate output)
         let candidates: Vec<MultiPairResultEntry> = entries
-            .iter()
-            .cloned()
-            .filter(|e| e.sharpe_ratio >= 1.0)
+            .into_iter()
+            .filter(|e| e.total_return > 0.0 && e.sharpe_ratio > 1.0)
             .collect();
         if candidates.is_empty() {
-            eprintln!("All pairs had Sharpe ratio < 1.0");
+            eprintln!("No pairs passed the non-negative return & Sharpe filter");
             return Ok(());
         }
 
@@ -202,22 +200,22 @@ fn main() -> Result<()> {
             .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
             .collect();
 
-        // Rank by (ascending) max drawdown: lower drawdown is better
-        let mut by_drawdown = candidates.clone();
-        by_drawdown.sort_by(|x, y| {
-            x.max_drawdown
-                .partial_cmp(&y.max_drawdown)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let ranked_by_drawdown = by_drawdown
-            .iter()
-            .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
-            .collect();
+        let ranked_by_return = {
+            let mut v = candidates.clone();
+            v.sort_by(|x, y| {
+                y.total_return
+                    .partial_cmp(&x.total_return)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            v.iter()
+                .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
+                .collect::<Vec<_>>()
+        };
 
         let aggregate = MultiPairAggregate {
             pairs: candidates,
             ranked_by_sharpe,
-            ranked_by_drawdown,
+            ranked_by_return,
         };
         let json = serde_json::to_string_pretty(&aggregate)?;
         if let Some(path) = cli.out.as_ref() {
