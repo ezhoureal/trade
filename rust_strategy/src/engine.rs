@@ -83,11 +83,15 @@ struct Engine<'a> {
     starting_capital: f64,
     cash: f64,
     invested_capital: f64,
+    // If commodity_a_prefix == commodity_b_prefix we operate in single commodity mode
+    // and generate spreads from distinct contracts within the same commodity.
+    single_commodity: bool,
 }
 
 impl<'a> Engine<'a> {
     /// Create a new Engine with empty state.
     fn new(params: &'a Params) -> Self {
+        let single = params.commodity_a_prefix == params.commodity_b_prefix;
         Self {
             params,
             spread_histories: HashMap::new(),
@@ -102,6 +106,7 @@ impl<'a> Engine<'a> {
             starting_capital: 100_000.0,
             cash: 100_000.0,
             invested_capital: 0.0,
+            single_commodity: single,
         }
     }
 }
@@ -242,6 +247,12 @@ impl<'a> Engine<'a> {
         let current_total_equity = self.starting_capital + self.equity;
         for (a, _oi_a) in a_contracts_today {
             for (b, _oi_b) in b_contracts_today {
+                // In single commodity mode we form intra-commodity pairs only once: enforce lexical order
+                // and skip identical contracts.
+                if self.single_commodity {
+                    if a == b { continue; }
+                    if a > b { continue; } // ensure (smaller, larger)
+                }
                 let pair = (a.clone(), b.clone());
                 if self.active_positions.contains_key(&pair) {
                     continue;
@@ -593,11 +604,27 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         }
 
         // Update spreads
-        for (a, _oi_a) in &a_contracts_today {
-            if let Some(&a_p) = a_prices.get(a) {
-                for (b, _oi_b) in &b_contracts_today {
-                    if let Some(&b_p) = b_prices.get(b) {
-                        engine.push_spread((a.clone(), b.clone()), a_p - b_p);
+        if engine.single_commodity {
+            // For single commodity mode, treat the collected a_contracts_today as the universe.
+            // We'll compute spreads only for ordered pairs (i < j) to avoid duplicates and self-pairs.
+            for i in 0..a_contracts_today.len() {
+                let (ref a, _oi_a) = a_contracts_today[i];
+                if let Some(&a_p) = a_prices.get(a) {
+                    for j in (i + 1)..a_contracts_today.len() {
+                        let (ref b, _oi_b) = a_contracts_today[j];
+                        if let Some(&b_p) = a_prices.get(b) { // same map
+                            engine.push_spread((a.clone(), b.clone()), a_p - b_p);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (a, _oi_a) in &a_contracts_today {
+                if let Some(&a_p) = a_prices.get(a) {
+                    for (b, _oi_b) in &b_contracts_today {
+                        if let Some(&b_p) = b_prices.get(b) {
+                            engine.push_spread((a.clone(), b.clone()), a_p - b_p);
+                        }
                     }
                 }
             }
@@ -607,7 +634,12 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         engine.close_expiring_positions();
         // Then normal mean reversion closures
         engine.close_positions();
-        engine.try_enter_positions(&a_contracts_today, &b_contracts_today);
+        if engine.single_commodity {
+            // Reuse same list for both sides since it's the same commodity universe.
+            engine.try_enter_positions(&a_contracts_today, &a_contracts_today);
+        } else {
+            engine.try_enter_positions(&a_contracts_today, &b_contracts_today);
+        }
         engine.equity_curve.push(engine.equity);
     }
 

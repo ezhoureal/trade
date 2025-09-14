@@ -157,11 +157,22 @@ fn main() -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let mut by_return = entries.clone();
+        // Prune pairs with negative Sharpe for ranking purposes (but keep full list in aggregate output)
+        let mut ranking_candidates: Vec<MultiPairResultEntry> = entries
+            .iter()
+            .cloned()
+            .filter(|e| e.sharpe_ratio >= 1.0)
+            .collect();
+        if ranking_candidates.is_empty() {
+            eprintln!("All pairs had Sharpe ratio < 1.0");
+            return Ok(());
+        }
+
+        let mut by_return = ranking_candidates.clone();
         by_return.sort_by(|x,y| y.total_return.partial_cmp(&x.total_return).unwrap_or(std::cmp::Ordering::Equal));
         let ranked_by_return = by_return.iter().map(|e| format!("{}:{}", e.commodity_a, e.commodity_b)).collect();
 
-        let mut by_sharpe = entries.clone();
+        let mut by_sharpe = ranking_candidates.clone();
         by_sharpe.sort_by(|x,y| y.sharpe_ratio.partial_cmp(&x.sharpe_ratio).unwrap_or(std::cmp::Ordering::Equal));
         let ranked_by_sharpe = by_sharpe.iter().map(|e| format!("{}:{}", e.commodity_a, e.commodity_b)).collect();
 

@@ -8,8 +8,6 @@ use std::fs;
 pub struct MarketData {
     pub df: DataFrame,
     pub trading_days: Vec<NaiveDate>,
-    pub commodity_a_contracts: Vec<String>,
-    pub commodity_b_contracts: Vec<String>,
 }
 
 pub fn load_market_data<P: AsRef<Path>>(path: P, commodity_a_prefix: &str, commodity_b_prefix: &str) -> Result<MarketData> {
