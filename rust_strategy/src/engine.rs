@@ -15,8 +15,6 @@ pub struct TradeLogEntry {
     pub kind: String,
     pub entry_bar: usize,
     pub exit_bar: usize,
-    pub entry_z: f64,
-    pub exit_z: f64,
     pub ret: f64,
     pub pct_move: f64,
     pub entry_spread: f64,
@@ -111,7 +109,22 @@ impl<'a> Engine<'a> {
     }
 }
 
+fn percent_moved(pos: &Position, cur_price: f64) -> f64 {
+    let raw_diff = cur_price - pos.entry_spread;
+    let directional = match pos.kind {
+        PositionKind::LongSpread => raw_diff,
+        PositionKind::ShortSpread => -raw_diff,
+    };
+    directional / pos.entry_spread
+}
+
 impl<'a> Engine<'a> {
+    fn cur_price(&self, pair: &(String, String)) -> Option<f64> {
+        self.spread_histories
+            .get(pair)
+            .and_then(|hist| hist.back().copied())
+    }
+
     // Common logic to finalize closing a position, updating equity, cash, stats, and logging.
     // reason: textual reason (e.g., "reversion", "expiry"). Optionally supply current z / last_spread.
     fn finalize_close(
@@ -119,25 +132,12 @@ impl<'a> Engine<'a> {
         pair: (String, String),
         pos: Position,
         reason: &str,
-        z_now: Option<f64>,
-        last_spread_opt: Option<f64>,
-    ) {
-        // Compute trade return if we have a current spread observation; else flat zero.
-        let trade_ret = if let Some(last_spread) = last_spread_opt {
-            let raw_diff = last_spread - pos.entry_spread;
-            let pct_move = if pos.entry_spread.abs() > 1e-9 {
-                raw_diff / pos.entry_spread
-            } else {
-                0.0
-            };
-            let directional = match pos.kind {
-                PositionKind::LongSpread => pct_move,
-                PositionKind::ShortSpread => -pct_move,
-            };
-            directional * pos.capital_committed
-        } else {
-            0.0
+    ) -> Result<()> {
+        let Some(cur_price) = self.cur_price(&pair) else {
+            return Err(anyhow::anyhow!("No current price available"));
         };
+        let pct_move = percent_moved(&pos, cur_price);
+        let trade_ret = pct_move * pos.capital_committed;
         self.equity += trade_ret;
         self.invested_capital -= pos.capital_committed;
         self.cash += pos.capital_committed + trade_ret;
@@ -146,19 +146,6 @@ impl<'a> Engine<'a> {
             .entry(pair.clone())
             .or_insert_with(|| PairStats::new(self.params.lookback_performance));
         stats.record(trade_ret, self.bar_count);
-        let pct_move_logged = if let Some(last_spread) = last_spread_opt {
-            if pos.entry_spread.abs() > 1e-9 {
-                (last_spread - pos.entry_spread) / pos.entry_spread
-                    * match pos.kind {
-                        PositionKind::LongSpread => 1.0,
-                        PositionKind::ShortSpread => -1.0,
-                    }
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
             kind: match pos.kind {
@@ -167,15 +154,14 @@ impl<'a> Engine<'a> {
             },
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
-            entry_z: pos.entry_z,
-            exit_z: z_now.unwrap_or(pos.entry_z),
             ret: trade_ret,
-            pct_move: pct_move_logged,
+            pct_move: pct_move,
             entry_spread: pos.entry_spread,
-            exit_spread: last_spread_opt.unwrap_or(pos.entry_spread),
+            exit_spread: cur_price,
             reason: reason.into(),
             trade_id: pos.trade_id,
         });
+        Ok(())
     }
 
     // compute mean, std, z of last value; returns (z, last_spread)
@@ -237,30 +223,7 @@ impl<'a> Engine<'a> {
             let Some(pos) = self.active_positions.remove(&pair) else {
                 continue;
             };
-            let Some((z, last_spread)) = self
-                .spread_histories
-                .get(&pair)
-                .and_then(|hist| self.calc_z(hist))
-            else {
-                continue;
-            };
-            if self.params.debug {
-                let raw_diff = last_spread - pos.entry_spread;
-                let pct_move = if pos.entry_spread.abs() > 1e-9 {
-                    raw_diff / pos.entry_spread
-                } else {
-                    0.0
-                };
-                let directional = match pos.kind {
-                    PositionKind::LongSpread => pct_move,
-                    PositionKind::ShortSpread => -pct_move,
-                };
-                let trade_ret = directional * pos.capital_committed;
-                if trade_ret < 0.0 {
-                    eprintln!("LOSS: Trade {} for pair {:?} lost {:.2}, enter spread = {:.2}, exit spread = {:.2}", pos.trade_id, pair, trade_ret, pos.entry_spread, last_spread);
-                }
-            }
-            self.finalize_close(pair, pos, "reversion", Some(z), Some(last_spread));
+            let _ = self.finalize_close(pair, pos, "reversion");
         }
     }
 
@@ -427,15 +390,7 @@ impl<'a> Engine<'a> {
         }
         for pair in to_close {
             if let Some(pos) = self.active_positions.remove(&pair) {
-                let (z_now, last_spread_opt) = if let Some(hist) = self.spread_histories.get(&pair)
-                {
-                    self.calc_z(hist)
-                        .map(|(z, ls)| (Some(z), Some(ls)))
-                        .unwrap_or((None, None))
-                } else {
-                    (None, None)
-                };
-                self.finalize_close(pair, pos, "expiry", z_now, last_spread_opt);
+                let _ = self.finalize_close(pair, pos, "expiry");
             }
         }
     }
