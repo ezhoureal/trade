@@ -134,20 +134,6 @@ impl<'a> Engine<'a> {
             .sum()
     }
 
-    // Net exposure: directional exposure treating long spread as +spread and short spread as -spread.
-    #[allow(dead_code)]
-    fn net_exposure(&self) -> f64 {
-        self.active_positions
-            .iter()
-            .filter_map(|(pair, pos)| {
-                self.cur_price(pair).map(|p| match pos.kind {
-                    PositionKind::LongSpread => p * pos.size as f64,
-                    PositionKind::ShortSpread => -p * pos.size as f64,
-                })
-            })
-            .sum()
-    }
-
     // Common logic to finalize closing a position, updating equity, cash, stats, and logging.
     // reason: textual reason (e.g., "reversion", "expiry"). Optionally supply current z / last_spread.
     fn finalize_close(
@@ -323,7 +309,7 @@ impl<'a> Engine<'a> {
                 }
                 // Exposure-based sizing: cap gross exposure at 3x current equity.
                 let safe_exposure = 3.0 * self.equity - self.gross_exposure();
-                let allocation = safe_exposure.min(self.equity * 0.60).min(self.cash);
+                let allocation = safe_exposure.min(self.equity * 0.50).min(self.cash);
                 let mut size: u32 = (allocation / cur_price.abs()).floor() as u32;
 
                 // Liquidity cap: limit notional size to 1% of daily volume of the less liquid leg (if volume available)
