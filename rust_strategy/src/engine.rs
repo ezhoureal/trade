@@ -304,9 +304,6 @@ impl<'a> Engine<'a> {
                     PositionKind::LongSpread
                 };
 
-                if cur_price == 0.0 {
-                    continue;
-                }
                 // Exposure-based sizing: cap gross exposure at 3x current equity.
                 let safe_exposure = 3.0 * self.equity - self.gross_exposure();
                 let allocation = safe_exposure.min(self.equity * 0.50).min(self.cash);
@@ -315,11 +312,11 @@ impl<'a> Engine<'a> {
                 // Liquidity cap: limit notional size to 1% of daily volume of the less liquid leg (if volume available)
                 if let (Some(v_a), Some(v_b)) = (self.daily_volume.get(a), self.daily_volume.get(b))
                 {
-                    let vol_cap = (*v_a).min(*v_b) as f64 * 0.01; // 1% of lesser volume
+                    let vol_cap = (*v_a).min(*v_b) as f32 * 0.01; // 1% of lesser volume
                     let vol_cap_u = vol_cap.floor() as u32;
-                    if vol_cap_u > 0 {
-                        size = size.min(vol_cap_u);
-                    }
+                    size = size.min(vol_cap_u);
+                } else {
+                    println!("WARNING: no volume data");
                 }
                 if size <= 0 {
                     continue;
@@ -336,9 +333,6 @@ impl<'a> Engine<'a> {
                 let mut hasher = AHasher::default();
                 format!("{}_{}", a, b).hash(&mut hasher);
                 let trade_id = hasher.finish();
-                if self.params.debug {
-                    eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z);
-                }
                 self.active_positions.insert(
                     pair.clone(),
                     Position {
@@ -487,7 +481,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     let contract_series = md.df.column("Contract")?.str()?;
     let close_series = md.df.column("Close")?.f64()?;
     let oi_series = md.df.column("OI").ok().and_then(|s| s.f64().ok());
-    let vol_series = md.df.column("Volume").ok().and_then(|s| s.u32().ok());
+    let vol_series = md.df.column("Volume").ok().and_then(|s| s.f64().ok());
     let date_series = md.df.column("Date")?; // assume date type or utf8 handled earlier
 
     // Extract dates as NaiveDate for each row
@@ -558,7 +552,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
             if let Some(vol) = vol_series.and_then(|col| col.get(i)) {
                 if let Some(c) = contract {
                     // Use per-row (per contract) volume; latest value wins for the day.
-                    engine.daily_volume.insert(c.to_string(), vol);
+                    engine.daily_volume.insert(c.to_string(), vol as u32);
                 }
             }
             let _ = process_row(
