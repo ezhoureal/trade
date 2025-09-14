@@ -249,10 +249,8 @@ impl<'a> Engine<'a> {
             for (b, _oi_b) in b_contracts_today {
                 // In single commodity mode we form intra-commodity pairs only once: enforce lexical order
                 // and skip identical contracts.
-                if self.single_commodity {
-                    if a == b { continue; }
-                    if a > b { continue; } // ensure (smaller, larger)
-                }
+                if a == b { continue; }
+                if a > b { continue; } // ensure (smaller, larger)
                 let pair = (a.clone(), b.clone());
                 if self.active_positions.contains_key(&pair) {
                     continue;
@@ -487,7 +485,7 @@ fn process_row(
 }
 
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
-    let md = load_market_data(path, &params.commodity_a_prefix, &params.commodity_b_prefix)?;
+    let md: crate::data::MarketData = load_market_data(path)?;
     if params.debug {
         eprintln!(
             "Loaded DataFrame: rows={}, cols={}",

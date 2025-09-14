@@ -10,7 +10,7 @@ pub struct MarketData {
     pub trading_days: Vec<NaiveDate>,
 }
 
-pub fn load_market_data<P: AsRef<Path>>(path: P, commodity_a_prefix: &str, commodity_b_prefix: &str) -> Result<MarketData> {
+pub fn load_market_data<P: AsRef<Path>>(path: P) -> Result<MarketData> {
     let path = path.as_ref();
     let mut files: Vec<String> = Vec::new();
     if path.is_file() {
@@ -115,15 +115,6 @@ pub fn load_market_data<P: AsRef<Path>>(path: P, commodity_a_prefix: &str, commo
         df = df.unique_stable(Some(&subset), UniqueKeepStrategy::Last, None)?;
     }
 
-    // Collect contracts by prefixes
-    let contract_col = df.column("Contract")?.str()?;
-    let mut commodity_a_contracts: Vec<String> = Vec::new();
-    let mut commodity_b_contracts: Vec<String> = Vec::new();
-    for v in contract_col.into_iter().flatten() { 
-        if v.starts_with(commodity_a_prefix) { commodity_a_contracts.push(v.to_string()) } 
-        else if v.starts_with(commodity_b_prefix) { commodity_b_contracts.push(v.to_string()) } 
-    }
-
     // Extract trading days
     let date_col = df.column("Date")?;
     let mut trading_days: Vec<NaiveDate> = Vec::new();
@@ -153,5 +144,5 @@ pub fn load_market_data<P: AsRef<Path>>(path: P, commodity_a_prefix: &str, commo
         eprintln!("Warning: no trading days parsed; check 'Date' column format. Columns present: {:?}", df.get_column_names());
         if let Ok(series) = df.column("Date") { eprintln!("Date column dtype: {:?}, first 5 values: {:?}", series.dtype(), series.head(Some(5))); }
     }
-    Ok(MarketData { df, trading_days, commodity_a_contracts, commodity_b_contracts })
+    Ok(MarketData { df, trading_days })
 }
