@@ -215,7 +215,7 @@ fn main() -> Result<()> {
             .collect();
 
         let aggregate = MultiPairAggregate {
-            pairs: entries,
+            pairs: candidates,
             ranked_by_sharpe,
             ranked_by_drawdown,
         };

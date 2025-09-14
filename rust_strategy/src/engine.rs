@@ -325,10 +325,12 @@ impl<'a> Engine<'a> {
                     continue;
                 }
                 let cost = size as f64 * cur_price * -z.signum();
-                println!(
-                    "ENTER candidate {:?} z={:.3} spread={:.3} size={}",
-                    pair, z, cur_price, size
-                );
+                if self.params.debug {
+                    println!(
+                        "ENTER candidate {:?} z={:.3} spread={:.3} size={}",
+                        pair, z, cur_price, size
+                    );
+                }
                 self.cash -= cost; // cost can be negative
 
                 let mut hasher = AHasher::default();
@@ -424,6 +426,26 @@ fn process_row(
         }
     }
     Some(())
+}
+
+fn calc_sharpe(equity_curve: &[f64]) -> f64 {
+    let returns: Vec<f64> = equity_curve
+        .windows(2)
+        .map(|w| (w[1] - w[0]) / w[0]) // daily/periodic returns
+        .collect();
+    let mean = returns.iter().copied().sum::<f64>() / returns.len() as f64;
+    let var = returns
+        .iter()
+        .map(|r| {
+            let d = r - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / returns.len() as f64;
+    let std = var.sqrt();
+
+    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
+    sharpe
 }
 
 pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
@@ -605,27 +627,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     };
 
     // Sharpe on equity changes per bar
-    let sharpe_ratio = if engine.equity_curve.len() >= 5 {
-        let mean =
-            engine.equity_curve.iter().copied().sum::<f64>() / engine.equity_curve.len() as f64;
-        let var = engine
-            .equity_curve
-            .iter()
-            .map(|v| {
-                let d = v - mean;
-                d * d
-            })
-            .sum::<f64>()
-            / engine.equity_curve.len() as f64;
-        let std = var.sqrt();
-        if std > 0.0 {
-            mean / std
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    };
+    let sharpe_ratio = calc_sharpe(&engine.equity_curve);
 
     // Max drawdown
     let mut peak = f64::MIN;
