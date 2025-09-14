@@ -16,7 +16,7 @@ pub struct TradeLogEntry {
     pub entry_bar: usize,
     pub exit_bar: usize,
     pub ret: f64,
-    pub pct_move: f64,
+    pub size: u32,
     pub entry_spread: f64,
     pub exit_spread: f64,
     pub reason: String,
@@ -57,7 +57,6 @@ struct Position {
     entry_spread: f64,
     size: u32,
     trade_id: u64,
-    capital_committed: f64,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -66,6 +65,7 @@ enum PositionKind {
     ShortSpread,
 }
 
+const STARTING_CASH: f64 = 100_000.0;
 /// Core engine object holding mutable simulation state to avoid long argument lists.
 struct Engine<'a> {
     params: &'a Params,
@@ -78,9 +78,7 @@ struct Engine<'a> {
     equity_curve: Vec<f64>,
     contract_last_day: HashMap<String, usize>,
     max_concurrent: usize,
-    starting_capital: f64,
     cash: f64,
-    invested_capital: f64,
     // If commodity_a_prefix == commodity_b_prefix we operate in single commodity mode
     // and generate spreads from distinct contracts within the same commodity.
     single_commodity: bool,
@@ -101,21 +99,27 @@ impl<'a> Engine<'a> {
             equity_curve: Vec::new(),
             contract_last_day: HashMap::new(),
             max_concurrent: 0,
-            starting_capital: 100_000.0,
-            cash: 100_000.0,
-            invested_capital: 0.0,
+            cash: STARTING_CASH,
             single_commodity: single,
         }
     }
 }
 
-fn percent_moved(pos: &Position, cur_price: f64) -> f64 {
-    let raw_diff = cur_price - pos.entry_spread;
-    let directional = match pos.kind {
-        PositionKind::LongSpread => raw_diff,
-        PositionKind::ShortSpread => -raw_diff,
-    };
-    directional / pos.entry_spread
+fn close_trade(pos: &Position, cur_price: f64) -> (f64, f64) {
+    // Returns (raw_gain, trade_ret) both scaled by position size.
+    // raw_gain: directional exposure notionally closed out (signed) * size
+    // trade_ret: realized PnL of the spread move * size
+    let size_f = pos.size as f64;
+    match pos.kind {
+        PositionKind::LongSpread => (
+            cur_price * size_f,
+            (cur_price - pos.entry_spread) * size_f,
+        ),
+        PositionKind::ShortSpread => (
+            -cur_price * size_f,
+            (pos.entry_spread - cur_price) * size_f,
+        ),
+    }
 }
 
 impl<'a> Engine<'a> {
@@ -136,11 +140,8 @@ impl<'a> Engine<'a> {
         let Some(cur_price) = self.cur_price(&pair) else {
             return Err(anyhow::anyhow!("No current price available"));
         };
-        let pct_move = percent_moved(&pos, cur_price);
-        let trade_ret = pct_move * pos.capital_committed;
-        self.equity += trade_ret;
-        self.invested_capital -= pos.capital_committed;
-        self.cash += pos.capital_committed + trade_ret;
+        let (raw_gain, trade_ret) = close_trade(&pos, cur_price);
+        self.cash += raw_gain;
         let stats = self
             .pair_stats
             .entry(pair.clone())
@@ -152,10 +153,10 @@ impl<'a> Engine<'a> {
                 PositionKind::LongSpread => "long_spread".into(),
                 PositionKind::ShortSpread => "short_spread".into(),
             },
+            size: pos.size,
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
             ret: trade_ret,
-            pct_move: pct_move,
             entry_spread: pos.entry_spread,
             exit_spread: cur_price,
             reason: reason.into(),
@@ -197,12 +198,6 @@ impl<'a> Engine<'a> {
             entry.pop_front();
         }
         entry.push_back(spread);
-        if self.params.debug && entry.len() == lookback {
-            eprintln!(
-                "Pair {:?} reached lookback with last spread {:.4}",
-                pair, spread
-            );
-        }
     }
 
     fn close_positions(&mut self) {
@@ -245,18 +240,13 @@ impl<'a> Engine<'a> {
         // Buffer (in trading days) before expiry during which we avoid opening new positions.
         const ENTRY_EXPIRY_BUFFER: usize = 7;
         let cur_day = self.bar_count;
-        // Current total equity notionally: starting_capital + realized equity change (self.equity)
-        let current_total_equity = self.starting_capital + self.equity;
         for (a, _oi_a) in a_contracts_today {
             for (b, _oi_b) in b_contracts_today {
                 // In single commodity mode we form intra-commodity pairs only once: enforce lexical order
                 // and skip identical contracts.
-                if a == b {
+                if a >= b {
                     continue;
                 }
-                if a > b {
-                    continue;
-                } // ensure (smaller, larger)
                 let pair = (a.clone(), b.clone());
                 if self.active_positions.contains_key(&pair) {
                     continue;
@@ -303,43 +293,27 @@ impl<'a> Engine<'a> {
                 if z.abs() <= self.params.entry_z {
                     continue;
                 }
-                // Capital allocation: up to 80% of current total equity per new position.
-                // But cannot exceed remaining cash. This enforces hard cash constraint.
-                let desired_allocation = 0.8 * current_total_equity;
-                let allocation = desired_allocation.min(self.cash);
-                // If remaining cash is extremely small (e.g., dust), skip to avoid opening meaningless position.
-                if allocation <= 0.0 {
-                    if self.params.debug {
-                        eprintln!(
-                            "Zero effective allocation for {:?}; cash={:.2}",
-                            pair, self.cash
-                        );
-                    }
-                    continue;
-                }
-                // Optional: require at least 1% of starting capital for practicality.
-                if allocation < 0.01 * self.starting_capital {
-                    if self.params.debug {
-                        eprintln!(
-                            "Allocation below minimum threshold for {:?}: {:.2}",
-                            pair, allocation
-                        );
-                    }
-                    continue;
-                }
-                let mut hasher = AHasher::default();
-                format!("{}_{}", a, b).hash(&mut hasher);
-                let trade_id = hasher.finish();
                 let kind = if z > 0.0 {
                     PositionKind::ShortSpread
                 } else {
                     PositionKind::LongSpread
                 };
+
+                let maximum_allocation = self.cash.min(self.equity * 0.6);
+                let size = (maximum_allocation / last_spread).abs().floor() as u32;
+                if size == 0 {
+                    continue;
+                }
+                let cost = size as f64 * last_spread * -z.signum();
+                println!("Size for {:?} is {}, total cost = {}, cash = {}", pair, size, cost, self.cash);
+                self.cash -= cost; // cost can be negative
+
+                let mut hasher = AHasher::default();
+                format!("{}_{}", a, b).hash(&mut hasher);
+                let trade_id = hasher.finish();
                 if self.params.debug {
                     eprintln!("ENTER {:?} {:?} z={:.3}", kind, pair, z);
                 }
-                self.cash -= allocation;
-                self.invested_capital += allocation;
                 self.active_positions.insert(
                     pair.clone(),
                     Position {
@@ -348,9 +322,8 @@ impl<'a> Engine<'a> {
                         entry_z: z,
                         entry_bar: self.bar_count,
                         entry_spread: last_spread,
-                        size: ((z.abs() * 2.0).floor() as u32).max(1).min(10),
+                        size: size,
                         trade_id,
-                        capital_committed: allocation,
                     },
                 );
                 let cur_len = self.active_positions.len();
@@ -495,6 +468,9 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     engine.contract_last_day = contract_last_day;
 
     for day in &md.trading_days {
+        if engine.cash <= 0.0 {
+            break;
+        }
         engine.bar_count += 1;
         let indices = if let Some(v) = date_indices.get(day) {
             v
@@ -579,6 +555,14 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         } else {
             engine.try_enter_positions(&a_contracts_today, &b_contracts_today);
         }
+        // Update equity based on current positions and cash
+        let mut position_value = 0.0;
+        for (pair, pos) in &engine.active_positions {
+            if let Some(cur_price) = engine.cur_price(pair) {
+                position_value += cur_price * pos.size as f64;
+            }
+        }
+        engine.equity = engine.cash + position_value;
         engine.equity_curve.push(engine.equity);
     }
 
@@ -660,7 +644,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
     });
 
     Ok(EngineResult {
-        total_return: engine.equity,
+        final_value: engine.equity,
         sharpe_ratio,
         total_trades,
         winning_trades,
@@ -669,9 +653,92 @@ pub fn run_engine(path: &str, params: &Params) -> Result<EngineResult> {
         max_drawdown: max_dd,
         // Final value approximation: current cash + capital still tied in open positions (at cost basis).
         // NOTE: Unrealized PnL on open positions is not marked-to-market here; could be added later.
-        final_value: engine.cash + engine.invested_capital,
+        total_return: engine.equity - STARTING_CASH,
         max_concurrent_positions: engine.max_concurrent,
         pair_performance,
         trade_log: engine.trade_log,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_pos(entry_spread: f64, kind: PositionKind) -> Position {
+        Position {
+            pair: ("a".into(), "b".into()),
+            kind,
+            entry_z: 0.0,
+            entry_bar: 0,
+            entry_spread,
+            size: 1,
+            trade_id: 1,
+        }
+    }
+
+    #[test]
+    fn percent_moved_long_negative_entry_to_positive_exit() {
+        // Case from user report: entry -210 -> exit 105, long spread raw move = 315; size=1 => PnL 315
+        let pos = mk_pos(-210.0, PositionKind::LongSpread);
+        let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
+        // For a long spread we store raw_gain = cur_price * size (105)
+        assert!((raw_gain - 105.0).abs() < 1e-9, "expected raw_gain 105 got {}", raw_gain);
+        assert!(
+            (trade_ret - 315.0).abs() < 1e-9,
+            "expected 315 trade_ret got {}",
+            trade_ret
+        );
+    }
+
+    #[test]
+    fn percent_moved_short_positive_move_down() {
+        // Short spread: entry 500 -> exit 350, raw directional move = 150 (profit); size=1 => PnL 150
+        let pos = mk_pos(500.0, PositionKind::ShortSpread);
+        let (raw_gain, trade_ret) = close_trade(&pos, 350.0);
+        // For a short spread raw_gain = -cur_price * size (-350)
+        assert!((raw_gain + 350.0).abs() < 1e-9, "expected raw_gain -350 got {}", raw_gain);
+        assert!(
+            (trade_ret - 150.0).abs() < 1e-9,
+            "expected 150 trade_ret got {}",
+            trade_ret
+        );
+    }
+
+    #[test]
+    fn percent_moved_zero_entry_protected() {
+        let pos = mk_pos(0.0, PositionKind::LongSpread);
+        let (raw_gain, trade_ret) = close_trade(&pos, 10.0);
+        assert!((raw_gain - 10.0).abs() < 1e-9, "expected raw_gain 10 got {}", raw_gain);
+        // entry spread zero -> move = 10 - 0 = 10; still valid
+        assert_eq!(trade_ret, 10.0);
+    }
+
+    #[test]
+    fn trade_return_long_negative_spread() {
+        // Entry spread -210, exit +105 -> raw move = 315, size=1 => return 315
+        let pos = mk_pos(-210.0, PositionKind::LongSpread);
+        let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
+        assert!((raw_gain - 105.0).abs() < 1e-9, "expected raw_gain 105 got {}", raw_gain);
+        assert!((trade_ret - 315.0).abs() < 1e-6, "expected 315 got {}", trade_ret);
+    }
+
+    #[test]
+    fn trade_return_scales_with_size() {
+        // Same spread move as previous test but with size=4
+        let mut pos = mk_pos(-210.0, PositionKind::LongSpread);
+        pos.size = 4;
+        let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
+        assert!(
+            (raw_gain - 4.0 * 105.0).abs() < 1e-9,
+            "expected raw_gain {} got {}",
+            4.0 * 105.0,
+            raw_gain
+        );
+        assert!(
+            (trade_ret - 4.0 * 315.0).abs() < 1e-6,
+            "expected {} got {}",
+            4.0 * 315.0,
+            trade_ret
+        );
+    }
 }
