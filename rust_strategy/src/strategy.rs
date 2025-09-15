@@ -12,6 +12,7 @@ pub struct TradeLogEntry {
     pub kind: String,
     pub entry_bar: u32,
     pub exit_bar: u32,
+    pub entry_z: f32,
     pub ret: f32,
     pub size: u32,
     pub entry_spread: f32,
@@ -21,7 +22,6 @@ pub struct TradeLogEntry {
 
 #[derive(Clone, Debug)]
 pub struct PairPosition {
-    pair: (String, String),
     kind: PositionKind,
     entry_z: f32,
     entry_bar: u32,
@@ -36,7 +36,6 @@ pub struct PairStrategy<'a> {
     active_positions: HashMap<(String, String), PairPosition>,
     contract_expiry: HashMap<String, u32>,
     bar_count: u32,
-    max_concurrent: usize,
 }
 
 impl<'a> PairStrategy<'a> {
@@ -48,7 +47,6 @@ impl<'a> PairStrategy<'a> {
             contract_expiry,
             bar_count: 0,
             trade_log: Vec::new(),
-            max_concurrent: 0,
         }
     }
 
@@ -67,12 +65,18 @@ impl<'a> PairStrategy<'a> {
                 self.push_spread((contr_a.name.clone(), contr_b.name.clone()), spread);
             }
         }
-        // Housekeeping / risk management
         self.close_expiring_positions(broker);
         self.close_reverted(broker);
-        // self.try_enter_positions(&a, &b, broker)?; // enable when entry logic desired
+
+        self.try_enter_positions(&a, &b, broker)
+            .ok_or(anyhow::anyhow!("failed"))?;
+
         self.stop_loss(broker);
         Ok(())
+    }
+
+    pub fn move_log(self) -> Vec<TradeLogEntry> {
+        self.trade_log
     }
 
     fn cur_price(&self, pair: &(String, String)) -> Option<f32> {
@@ -123,6 +127,7 @@ impl<'a> PairStrategy<'a> {
             size: pos.size,
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
+            entry_z: pos.entry_z,
             ret: trade_ret,
             entry_spread: pos.entry_spread,
             exit_spread: self.cur_price(&pair).unwrap(),
@@ -214,18 +219,13 @@ impl<'a> PairStrategy<'a> {
         self.active_positions.insert(
             pair.clone(),
             PairPosition {
-                pair: pair.clone(),
                 kind,
-                entry_z: z,
                 entry_bar: self.bar_count,
                 entry_spread: self.cur_price(&pair)?,
+                entry_z: z,
                 size: size,
             },
         );
-        let cur_len = self.active_positions.len();
-        if cur_len > self.max_concurrent {
-            self.max_concurrent = cur_len;
-        }
         Some(())
     }
 
@@ -353,5 +353,244 @@ impl<'a> PairStrategy<'a> {
                 }
             }
         }
+    }
+}
+
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::{
+        engine::{AccountStatus, Broker, ContractData, PositionKind},
+        params::Params,
+        strategy::PairStrategy,
+    };
+
+    // Minimal mock broker implementing the Broker trait used by PairStrategy.
+    // It keeps static cash/equity so sizing logic is deterministic and does not
+    // attempt to model PnL (not needed for unit tests of decision logic).
+    struct TestBroker {
+        cash: f32,
+        equity: f32,
+        // Record symbols we traded for simple sanity checks if needed.
+        traded: HashSet<String>,
+    }
+
+    impl TestBroker {
+        fn new() -> Self {
+            Self {
+                cash: 100_000.0,
+                equity: 100_000.0,
+                traded: HashSet::new(),
+            }
+        }
+    }
+
+    impl Broker for TestBroker {
+        fn buy(&mut self, symbol: &str, _qty: u32) -> Option<i32> {
+            self.traded.insert(format!("BUY:{symbol}"));
+            Some(0)
+        }
+        fn sell(&mut self, symbol: &str, _qty: u32) -> Option<i32> {
+            self.traded.insert(format!("SELL:{symbol}"));
+            Some(0)
+        }
+        fn get_status(&'_ self) -> AccountStatus {
+            AccountStatus {
+                cash: self.cash,
+                equity: self.equity,
+            }
+        }
+    }
+
+    fn base_params() -> Params {
+        Params {
+            lookback_zscore: 5,
+            lookback_performance: 50,
+            entry_z: 1.5,
+            exit_z: 0.5,
+            expiry_close_days: 3,
+            debug: false,
+            commodity_a_prefix: "A".into(),
+            commodity_b_prefix: "B".into(),
+        }
+    }
+
+    fn mk_contract(name: &str, price: f32, volume: u32) -> ContractData {
+        ContractData {
+            name: name.to_string(),
+            price,
+            volume,
+        }
+    }
+
+    // Helper to run one bar through strategy for single pair (a,b)
+    fn run_bar(
+        strategy: &mut PairStrategy,
+        broker: &mut dyn Broker,
+        bar: u32,
+        price_a: f32,
+        price_b: f32,
+        name_a: &str,
+        name_b: &str,
+        vol: u32,
+    ) {
+        let a_vec = vec![mk_contract(name_a, price_a, vol)];
+        let b_vec = vec![mk_contract(name_b, price_b, vol)];
+        strategy.trade(bar, a_vec, b_vec, broker).expect("trade ok");
+    }
+
+    #[test]
+    fn enters_long_position_on_negative_extreme_z() {
+        let params = base_params();
+        let mut expiry: HashMap<String, u32> = HashMap::new();
+        expiry.insert("A1".into(), 50);
+        expiry.insert("B1".into(), 50);
+        let mut strat = PairStrategy::new(&params, expiry);
+        let mut broker = TestBroker::new();
+
+        // Build 5-bar history where final spread is an outlier negative enough to cross entry_z.
+        // Spread = price_a - price_b.
+        let spreads = [-1.0, -1.1, -0.9, -1.0, -3.0];
+        for (i, s) in spreads.iter().enumerate() {
+            // Choose price_a and price_b such that difference equals s. Use price_b = 10.0.
+            run_bar(
+                &mut strat,
+                &mut broker,
+                (i + 1) as u32,
+                10.0 + s,
+                10.0,
+                "A1",
+                "B1",
+                10_000,
+            );
+        }
+
+        // After last bar a position should be opened.
+        assert_eq!(
+            strat.active_positions.len(),
+            1,
+            "Expected one active position"
+        );
+        let pos = strat.active_positions.values().next().unwrap();
+        assert!(
+            matches!(pos.kind, PositionKind::Long),
+            "Expected Long position due to negative z"
+        );
+        // Volume cap: 1% of 10_000 = 100.
+        assert_eq!(pos.size, 100, "Size should respect 1% volume cap");
+    }
+
+    #[test]
+    fn reversion_closes_position() {
+        let params = base_params();
+        let mut expiry: HashMap<String, u32> = HashMap::new();
+        expiry.insert("A1".into(), 50);
+        expiry.insert("B1".into(), 50);
+        let mut strat = PairStrategy::new(&params, expiry);
+        let mut broker = TestBroker::new();
+
+        // Enter (same sequence as previous test)
+        let spreads = [-1.0, -1.1, -0.9, -1.0, -3.0];
+        for (i, s) in spreads.iter().enumerate() {
+            run_bar(
+                &mut strat,
+                &mut broker,
+                (i + 1) as u32,
+                10.0 + s,
+                10.0,
+                "A1",
+                "B1",
+                10_000,
+            );
+        }
+        assert_eq!(strat.active_positions.len(), 1, "Entry failed");
+
+        // Provide new bars moving spread back toward mean (e.g., -1.0 repeatedly) to trigger reversion exit (z magnitude < exit_z)
+        for add in 0..3 {
+            // a few bars to dilute outlier
+            let bar = (spreads.len() + 1 + add) as u32;
+            run_bar(&mut strat, &mut broker, bar, 9.0, 10.0, "A1", "B1", 10_000);
+            // spread = -1.0
+        }
+
+        assert_eq!(
+            strat.active_positions.len(),
+            0,
+            "Position should have been closed on reversion"
+        );
+        assert_eq!(strat.trade_log.len(), 1, "One trade should be logged");
+        assert_eq!(strat.trade_log[0].reason, "reversion");
+    }
+
+    #[test]
+    fn stop_loss_triggers_for_short_position() {
+        let mut params = base_params();
+        params.entry_z = 1.5; // ensure entry on positive outlier
+        let mut expiry: HashMap<String, u32> = HashMap::new();
+        expiry.insert("A1".into(), 50);
+        expiry.insert("B1".into(), 50);
+        let mut strat = PairStrategy::new(&params, expiry);
+        let mut broker = TestBroker::new();
+
+        // Build spreads with last large positive outlier -> Short entry
+        let spreads = [1.0, 1.1, 0.9, 1.0, 3.0];
+        for (i, s) in spreads.iter().enumerate() {
+            run_bar(
+                &mut strat,
+                &mut broker,
+                (i + 1) as u32,
+                10.0 + s,
+                10.0,
+                "A1",
+                "B1",
+                10_000,
+            );
+        }
+        assert_eq!(strat.active_positions.len(), 1, "Short entry expected");
+        let entry_spread = strat.active_positions.values().next().unwrap().entry_spread;
+        assert!(entry_spread > 0.0);
+
+        // Adverse move: increase spread further so unrealized loss > 20%
+        // Provide one more bar with even larger spread (e.g. 4.0)
+        run_bar(&mut strat, &mut broker, 6, 14.0, 10.0, "A1", "B1", 10_000); // spread 4.0
+
+        assert_eq!(
+            strat.active_positions.len(),
+            0,
+            "Stop loss should close position"
+        );
+        assert_eq!(strat.trade_log.len(), 1);
+        assert_eq!(
+            strat.trade_log[0].reason, "stop_loss",
+            "Expected stop_loss reason, got {}",
+            strat.trade_log[0].reason
+        );
+    }
+
+    #[test]
+    fn expiry_forces_close() {
+        let params = base_params();
+        // Expiry on day 10, close window 3 -> any bar with cur_day >= 7 triggers force close.
+        let mut expiry: HashMap<String, u32> = HashMap::new();
+        expiry.insert("A1".into(), 10);
+        expiry.insert("B1".into(), 10);
+        let mut strat = PairStrategy::new(&params, expiry);
+        let mut broker = TestBroker::new();
+
+        // Enter a position early (same negative outlier pattern)
+        let spreads = [-1.0, -1.1, -0.9, -1.0, -3.0];
+        for (i, s) in spreads.iter().enumerate() {
+            run_bar(
+                &mut strat,
+                &mut broker,
+                (i + 1) as u32,
+                10.0 + s,
+                10.0,
+                "A1",
+                "B1",
+                10_000,
+            );
+        }
+        assert_eq!(strat.active_positions.len(), 0, "shouldn't enter when expiry is near");
     }
 }
