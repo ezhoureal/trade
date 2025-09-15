@@ -50,11 +50,15 @@ const STARTING_CASH: f64 = 100_000.0;
 struct Engine<'a> {
     params: &'a Params,
     trade_log: Vec<TradeLogEntry>,
-    bar_count: usize,
     max_concurrent: usize,
-    daily_volume: HashMap<String, u32>,
+    contract_expiry_date: HashMap<String, u32>,
 }
 
+fn build_expiry_date(md: &DataFrame) -> HashMap<String, u32> {
+    let mut contract_expiry_date: HashMap<String, u32> = HashMap::new();
+
+    contract_expiry_date
+}
 impl<'a> Engine<'a> {
     /// Create a new Engine with empty state.
     fn new(params: &'a Params) -> Self {
@@ -62,11 +66,66 @@ impl<'a> Engine<'a> {
         Self {
             params,
             trade_log: Vec::new(),
-            bar_count: 0,
             max_concurrent: 0,
-            daily_volume: HashMap::new(),
+            contract_expiry_date: HashMap::new(),
         }
     }
+
+fn prepare_data_today(
+    self: &Self,
+    df: &DataFrame,
+    day: u32,
+) -> Result<(Vec<ContractData>, Vec<ContractData>)> {
+    let mut a_contracts: Vec<ContractData> = Vec::new();
+    let mut b_contracts: Vec<ContractData> = Vec::new();
+    // Filter rows where Bar == day
+    let mask = df.column("Bar")?.equal(day)?;
+    let today_df = df.filter(&mask)?;
+
+    let contracts = today_df.column("Contract")?.str()?;
+    let closes = today_df.column("Close")?.f64()?;
+    let vols = today_df.column("Volume")?.f64()?;
+    let ois = today_df.column("OI")?.f64()?;
+    // Collect today's contracts for each commodity
+    for i in 0..today_df.height() {
+        let contract = contracts.get(i).unwrap();
+        let close = closes.get(i).unwrap();
+        let vol = vols.get(i).unwrap();
+        let oi = ois.get(i).unwrap();
+        let contract_data = ContractData {
+            name: contract.to_string(),
+            price: close as f32,
+            volume: vol as u32,
+            oi: oi as u32,
+            expiry_date: *self.contract_expiry_date.get(contract).unwrap_or(&0) as u32,
+        };
+        if contract.starts_with(&self.params.commodity_a_prefix) {
+            a_contracts.push(contract_data);
+        } else {
+            b_contracts.push(contract_data);
+        }
+    }
+    Ok((a_contracts, b_contracts))
+}
+
+pub fn run(self: &mut Self, df: &DataFrame) -> Result<()> {
+    let date_series = df.column("Bar")?.u32()?;
+
+    self.contract_expiry_date = build_expiry_date(&df);
+    let mut trading_days: Vec<u32> = date_series
+        .unique()?
+        .into_iter()
+        .filter_map(|x| x)
+        .collect();
+    trading_days.sort();
+
+    for day in trading_days {
+        let (a_today, b_today) = self.prepare_data_today(&df, day)?;
+        // strategy.trade(engine.bar_count as u32, a_today, b_today);
+    }
+    Ok(())
+}
+
 }
 
 fn calc_sharpe(equity_curve: &[f64]) -> f64 {
@@ -99,48 +158,6 @@ pub struct ContractData {
     pub expiry_date: u32,
 }
 
-fn build_expiry_date(md: &DataFrame) -> HashMap<String, u32> {
-    let mut contract_expiry_date: HashMap<String, u32> = HashMap::new();
-
-    contract_expiry_date
-}
-
-fn prepare_data_today(
-    df: &DataFrame,
-    day: u32,
-    contract_expiry_date: &HashMap<String, u32>,
-) -> Result<(Vec<ContractData>, Vec<ContractData>)> {
-    let mut a_contracts: Vec<ContractData> = Vec::new();
-    let mut b_contracts: Vec<ContractData> = Vec::new();
-    // Filter rows where Bar == day
-    let mask = df.column("Bar")?.equal(day)?;
-    let today_df = df.filter(&mask)?;
-
-    let contracts = today_df.column("Contract")?.str()?;
-    let closes = today_df.column("Close")?.f64()?;
-    let vols = today_df.column("Volume")?.f64()?;
-    let ois = today_df.column("OI")?.f64()?;
-    // Collect today's contracts for each commodity
-    for i in 0..today_df.height() {
-        let contract = contracts.get(i).unwrap();
-        let close = closes.get(i).unwrap();
-        let vol = vols.get(i).unwrap();
-        let oi = ois.get(i).unwrap();
-        let contract_data = ContractData {
-            name: contract.to_string(),
-            price: close as f32,
-            volume: vol as u32,
-            oi: oi as u32,
-            expiry_date: *contract_expiry_date.get(contract).unwrap_or(&0) as u32,
-        };
-        if contract.starts_with(&params.commodity_a_prefix) {
-            a_contracts.push(contract_data);
-        } else {
-            b_contracts.push(contract_data);
-        }
-    }
-    Ok((a_contracts, b_contracts))
-}
 
 pub fn run_engine(path: &str, params: &Params) -> Result<()> {
     let df = load_market_data(path)?;
@@ -155,26 +172,10 @@ pub fn run_engine(path: &str, params: &Params) -> Result<()> {
         );
     }
 
-    let date_series = df.column("Bar")?.u32()?;
-
-    let contract_expiry_date = build_expiry_date(&df);
-    let mut trading_days: Vec<u32> = date_series
-        .unique()?
-        .into_iter()
-        .filter_map(|x| x)
-        .collect();
-    trading_days.sort();
-
     let mut engine = Engine::new(params);
-    // let strategy = PairStrategy::new();
-
-    for day in trading_days {
-        let (a_today, b_today) = prepare_data_today(&df, day, &contract_expiry_date)?;
-        // strategy.trade(engine.bar_count as u32, a_today, b_today);
-    }
+    engine.run(&df);
     Ok(())
 }
-
 // Aggregate statistics
 // let total_trades = engine.trade_log.len();
 // let winning_trades = engine.trade_log.iter().filter(|t| t.ret > 0.0).count();
