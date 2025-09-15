@@ -5,10 +5,11 @@ mod strategy;
 
 use anyhow::Result;
 use clap::Parser;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 
 // use crate::engine::run_engine;
-use crate::params::Params;
+use crate::{engine::run_engine, params::Params};
 
 #[derive(Serialize, Clone)]
 struct MultiPairResultEntry {
@@ -65,10 +66,6 @@ struct Cli {
     /// Commodity B prefix (e.g. fu) for single-run mode
     #[arg(short = 'b', default_value = "au")]
     commodity_b: String,
-
-    /// Comma-separated list of commodity prefix pairs (format a:b,c:d,...) overrides single-run mode
-    #[arg(long = "pairs")]
-    pairs: Option<String>,
 
     /// Path to a text file containing commodity prefix pairs (one a:b per line; lines starting with # ignored)
     #[arg(long = "pairs-file")]
@@ -140,97 +137,88 @@ fn load_pairs_from_file(path: &str) -> Result<Vec<(String, String)>> {
     Ok(pairs)
 }
 
+fn test_multiple_pairs(cli: &Cli, collected: Vec<(String, String)>) -> Result<()> {
+    // Parallel execution: each pair independent. Collect results; if any fail, propagate first error.
+    let entries: Vec<MultiPairResultEntry> = collected
+        .par_iter()
+        .map(|(a, b)| {
+            let params = build_params(&cli, a, b);
+            let res = run_engine(&cli.data, &params);
+            (params, res)
+        })
+        .map(|(params, res)| match res {
+            Ok(r) => Ok(MultiPairResultEntry {
+                commodity_a: params.commodity_a_prefix,
+                commodity_b: params.commodity_b_prefix,
+                total_return: r.total_return,
+                sharpe_ratio: r.sharpe_ratio,
+                win_rate: r.win_rate,
+                total_trades: r.total_trades,
+                max_drawdown: r.max_drawdown,
+            }),
+            Err(e) => Err(e),
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let candidates: Vec<MultiPairResultEntry> = entries
+        .into_iter()
+        .filter(|e| e.total_return > 0.0 && e.sharpe_ratio > 0.0)
+        .collect();
+    if candidates.is_empty() {
+        eprintln!("No pairs passed the non-negative return & Sharpe filter");
+        return Ok(());
+    }
+
+    let mut by_sharpe = candidates.clone();
+    by_sharpe.sort_by(|x, y| {
+        y.sharpe_ratio
+            .partial_cmp(&x.sharpe_ratio)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let ranked_by_sharpe = by_sharpe
+        .iter()
+        .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
+        .collect();
+
+    let ranked_by_return = {
+        let mut v = candidates.clone();
+        v.sort_by(|x, y| {
+            y.total_return
+                .partial_cmp(&x.total_return)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        v.iter()
+            .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
+            .collect::<Vec<_>>()
+    };
+
+    let aggregate = MultiPairAggregate {
+        pairs: candidates,
+        ranked_by_sharpe,
+        ranked_by_return,
+    };
+    let json = serde_json::to_string_pretty(&aggregate)?;
+    if let Some(path) = cli.out.as_ref() {
+        std::fs::write(path, json)?;
+        println!("Wrote output JSON to {}", path);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    // Gather pairs from either --pairs or --pairs-file (or both). If any provided, run multi-pair mode.
-    
-    // let mut collected: Vec<(String, String)> = Vec::new();
-    // if let Some(spec) = &cli.pairs {
-    //     collected.extend(parse_pairs(spec));
-    // } else if let Some(file_path) = &cli.pairs_file {
-    //     match load_pairs_from_file(file_path) {
-    //         Ok(mut v) => collected.append(&mut v),
-    //         Err(e) => {
-    //             eprintln!("Failed to load pairs from file {}: {:#}", file_path, e);
-    //             std::process::exit(1);
-    //         }
-    //     }
-    // }
-    // if !collected.is_empty() {
-    //     // Parallel execution: each pair independent. Collect results; if any fail, propagate first error.
-    //     let entries: Vec<MultiPairResultEntry> = collected
-    //         .par_iter()
-    //         .map(|(a, b)| {
-    //             let params = build_params(&cli, a, b);
-    //             let res = run_engine(&cli.data, &params);
-    //             (params, res)
-    //         })
-    //         .map(|(params, res)| match res {
-    //             Ok(r) => Ok(MultiPairResultEntry {
-    //                 commodity_a: params.commodity_a_prefix,
-    //                 commodity_b: params.commodity_b_prefix,
-    //                 total_return: r.total_return,
-    //                 sharpe_ratio: r.sharpe_ratio,
-    //                 win_rate: r.win_rate,
-    //                 total_trades: r.total_trades,
-    //                 max_drawdown: r.max_drawdown,
-    //             }),
-    //             Err(e) => Err(e),
-    //         })
-    //         .collect::<Result<Vec<_>>>()?;
-
-    //     let candidates: Vec<MultiPairResultEntry> = entries
-    //         .into_iter()
-    //         .filter(|e| e.total_return > 0.0 && e.sharpe_ratio > 0.0 && e.total_return > e.max_drawdown)
-    //         .collect();
-    //     if candidates.is_empty() {
-    //         eprintln!("No pairs passed the non-negative return & Sharpe filter");
-    //         return Ok(());
-    //     }
-
-    //     let mut by_sharpe = candidates.clone();
-    //     by_sharpe.sort_by(|x, y| {
-    //         y.sharpe_ratio
-    //             .partial_cmp(&x.sharpe_ratio)
-    //             .unwrap_or(std::cmp::Ordering::Equal)
-    //     });
-    //     let ranked_by_sharpe = by_sharpe
-    //         .iter()
-    //         .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
-    //         .collect();
-
-    //     let ranked_by_return = {
-    //         let mut v = candidates.clone();
-    //         v.sort_by(|x, y| {
-    //             y.total_return
-    //                 .partial_cmp(&x.total_return)
-    //                 .unwrap_or(std::cmp::Ordering::Equal)
-    //         });
-    //         v.iter()
-    //             .map(|e| format!("{}:{}", e.commodity_a, e.commodity_b))
-    //             .collect::<Vec<_>>()
-    //     };
-
-    //     let aggregate = MultiPairAggregate {
-    //         pairs: candidates,
-    //         ranked_by_sharpe,
-    //         ranked_by_return,
-    //     };
-    //     let json = serde_json::to_string_pretty(&aggregate)?;
-    //     if let Some(path) = cli.out.as_ref() {
-    //         std::fs::write(path, json)?;
-    //         println!("Wrote output JSON to {}", path);
-    //     }
-    //     return Ok(());
-    // }
-
-    // // Single-run mode (unchanged)
-    // let params = build_params(&cli, &cli.commodity_a, &cli.commodity_b);
-    // let result = run_engine(&cli.data, &params)?;
-    // let json = serde_json::to_string_pretty(&result)?;
-    // if let Some(path) = cli.out.as_ref() {
-    //     std::fs::write(path, json)?;
-    //     println!("Wrote output JSON to {}", path);
-    // }
+    if let Some(file_path) = &cli.pairs_file {
+        let pairs =  load_pairs_from_file(file_path)?;
+        test_multiple_pairs(&cli, pairs)?;
+    } else {
+        // test a single pair
+        let params = build_params(&cli, &cli.commodity_a, &cli.commodity_b);
+        let result = run_engine(&cli.data, &params)?;
+        let json = serde_json::to_string_pretty(&result)?;
+        if let Some(path) = cli.out.as_ref() {
+            std::fs::write(path, json)?;
+            println!("Wrote output JSON to {}", path);
+        }
+    }
     Ok(())
 }

@@ -185,7 +185,9 @@ impl<'a> PairStrategy<'a> {
                 continue;
             };
             if let Err(e) = self.close(pair, pos, "reversion", broker) {
-                if self.params.debug { eprintln!("close_reverted error: {e}"); }
+                if self.params.debug {
+                    eprintln!("close_reverted error: {e}");
+                }
             }
         }
     }
@@ -236,7 +238,12 @@ impl<'a> PairStrategy<'a> {
             .unwrap_or(false)
     }
 
-    fn try_enter_positions(&mut self, commodity_a: &ContractsToday, commodity_b: &ContractsToday, broker: &mut dyn Broker) -> Option<()> {
+    fn try_enter_positions(
+        &mut self,
+        commodity_a: &ContractsToday,
+        commodity_b: &ContractsToday,
+        broker: &mut dyn Broker,
+    ) -> Option<()> {
         for contr_a in commodity_a.iter() {
             for contr_b in commodity_b.iter() {
                 if contr_a.name >= contr_b.name {
@@ -315,7 +322,11 @@ impl<'a> PairStrategy<'a> {
         }
         for pair in to_close {
             let pos = self.active_positions.remove(&pair)?;
-            if let Err(e) = self.close(pair, pos, "expiry", broker) { if self.params.debug { eprintln!("close_expiring error: {e}"); } }
+            if let Err(e) = self.close(pair, pos, "expiry", broker) {
+                if self.params.debug {
+                    eprintln!("close_expiring error: {e}");
+                }
+            }
         }
         Some(())
     }
@@ -335,7 +346,11 @@ impl<'a> PairStrategy<'a> {
         }
         for pair in to_close {
             if let Some(pos) = self.active_positions.remove(&pair) {
-                if let Err(e) = self.close(pair, pos, "stop_loss", broker) { if self.params.debug { eprintln!("stop_loss close error: {e}"); } }
+                if let Err(e) = self.close(pair, pos, "stop_loss", broker) {
+                    if self.params.debug {
+                        eprintln!("stop_loss close error: {e}");
+                    }
+                }
             }
         }
     }

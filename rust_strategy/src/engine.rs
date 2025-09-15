@@ -10,25 +10,25 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
-pub struct EngineResult {
-    pub total_return: f64,
-    pub sharpe_ratio: f64,
+pub struct BackTestResult {
+    pub total_return: f32,
+    pub sharpe_ratio: f32,
     pub total_trades: usize,
     pub winning_trades: usize,
     pub losing_trades: usize,
-    pub win_rate: f64,
-    pub max_drawdown: f64,
-    pub final_value: f64,
+    pub win_rate: f32,
+    pub max_drawdown: f32,
+    pub final_value: f32,
     pub max_concurrent_positions: usize,
 }
 
-const STARTING_CASH: f64 = 100_000.0;
+const STARTING_CASH: f32 = 100_000.0;
 /// Core engine object holding mutable simulation state to avoid long argument lists.
 pub struct Engine<'a> {
     params: &'a Params,
-    max_concurrent: usize,
     contract_expiry_date: HashMap<String, u32>,
     current_price: HashMap<String, f32>,
+    equity_curve: Vec<f32>,
     equity: f32,
     cash: f32,
     open_positions: HashMap<String, Position>,
@@ -72,7 +72,7 @@ pub trait Broker {
     fn buy(&mut self, symbol: &str, qty: u32);
     fn sell(&mut self, symbol: &str, qty: u32);
 
-    fn get_status(&self) -> AccountStatus;
+    fn get_status(&'_ self) -> AccountStatus<'_>;
 }
 
 impl<'a> Broker for Engine<'a> {
@@ -109,7 +109,7 @@ impl<'a> Broker for Engine<'a> {
         }
     }
 
-    fn get_status(&self) -> AccountStatus {
+    fn get_status(&'_ self) -> AccountStatus<'_> {
         AccountStatus {
             cash: self.cash,
             equity: self.equity,
@@ -123,8 +123,8 @@ impl<'a> Engine<'a> {
     fn new(params: &'a Params) -> Engine<'a> {
         Self {
             params,
-            max_concurrent: 0,
             contract_expiry_date: HashMap::new(),
+            equity_curve: Vec::new(),
             equity: 0.0,
             cash: 0.0,
             current_price: HashMap::new(),
@@ -144,9 +144,9 @@ impl<'a> Engine<'a> {
         let today_df = df.filter(&mask)?;
 
         let contracts = today_df.column("Contract")?.str()?;
-        let closes = today_df.column("Close")?.f64()?;
-        let vols = today_df.column("Volume")?.f64()?;
-        let ois = today_df.column("OI")?.f64()?;
+        let closes = today_df.column("Close")?.f32()?;
+        let vols = today_df.column("Volume")?.f32()?;
+        let ois = today_df.column("OI")?.f32()?;
         // Collect today's contracts for each commodity
         for i in 0..today_df.height() {
             let contract = contracts.get(i).unwrap();
@@ -168,7 +168,7 @@ impl<'a> Engine<'a> {
         Ok((a_contracts, b_contracts))
     }
 
-    pub fn run(self: &mut Self, df: &DataFrame) -> Result<()> {
+    pub fn run(self: &mut Self, df: &DataFrame) -> Result<BackTestResult> {
         let mut trading_days: Vec<u32> = df
             .column("Bar")?
             .u32()?
@@ -184,24 +184,34 @@ impl<'a> Engine<'a> {
             // Pass mutable self as broker only during the trade call; no internal storage to avoid aliasing.
             strategy.trade(day, a_today, b_today, self)?;
         }
-        Ok(())
+        Ok(BackTestResult {
+            total_return: 0.0,
+            sharpe_ratio: 0.0,
+            total_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            win_rate: 0.0,
+            max_drawdown: 0.0,
+            final_value: 0.0,
+            max_concurrent_positions: todo!(),
+        })
     }
 }
 
-fn calc_sharpe(equity_curve: &[f64]) -> f64 {
-    let returns: Vec<f64> = equity_curve
+fn calc_sharpe(equity_curve: &[f32]) -> f32 {
+    let returns: Vec<f32> = equity_curve
         .windows(2)
         .map(|w| (w[1] - w[0]) / w[0]) // daily/periodic returns
         .collect();
-    let mean = returns.iter().copied().sum::<f64>() / returns.len() as f64;
+    let mean = returns.iter().copied().sum::<f32>() / returns.len() as f32;
     let var = returns
         .iter()
         .map(|r| {
             let d = r - mean;
             d * d
         })
-        .sum::<f64>()
-        / returns.len() as f64;
+        .sum::<f32>()
+        / returns.len() as f32;
     let std = var.sqrt();
 
     let sharpe = if std > 0.0 { mean / std } else { 0.0 };
@@ -217,7 +227,7 @@ pub struct ContractData {
     pub oi: u32,
 }
 
-pub fn run_engine(path: &str, params: &Params) -> Result<()> {
+pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
     let df = load_market_data(path)?;
     // Filter the market data to only include contracts with the specified prefixes
     let df = filter_contract_by_prefix(df, &params.commodity_a_prefix, &params.commodity_b_prefix)?;
@@ -231,15 +241,14 @@ pub fn run_engine(path: &str, params: &Params) -> Result<()> {
     }
 
     let mut engine = Engine::new(params);
-    engine.run(&df)?;
-    Ok(())
+    engine.run(&df)
 }
 // Aggregate statistics
 // let total_trades = engine.trade_log.len();
 // let winning_trades = engine.trade_log.iter().filter(|t| t.ret > 0.0).count();
 // let losing_trades = total_trades - winning_trades;
 // let win_rate = if total_trades > 0 {
-//     winning_trades as f64 / total_trades as f64
+//     winning_trades as f32 / total_trades as f32
 // } else {
 //     0.0
 // };
@@ -248,7 +257,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<()> {
 // let sharpe_ratio = calc_sharpe(&engine.equity_curve);
 
 // // Max drawdown
-// let mut peak = f64::MIN;
+// let mut peak = f32::MIN;
 // let mut max_dd = 0.0;
 // for v in &engine.equity_curve {
 //     if *v > peak {
@@ -302,7 +311,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<()> {
 // mod tests {
 //     use super::*;
 
-//     fn mk_pos(entry_spread: f64, kind: PositionKind) -> Position {
+//     fn mk_pos(entry_spread: f32, kind: PositionKind) -> Position {
 //         Position {
 //             pair: ("a".into(), "b".into()),
 //             kind,
