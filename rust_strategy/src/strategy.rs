@@ -2,6 +2,9 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::engine::ContractsToday;
 
+trait Strategy {
+    fn trade(&mut self, bar: u32, a: ContractsToday, b: ContractsToday);
+}
 
 #[derive(Clone, Debug)]
 pub struct Position {
@@ -20,6 +23,7 @@ pub enum PositionKind {
     LongSpread,
     ShortSpread,
 }
+
 pub struct PairStrategy {
     spread_histories: HashMap<(String, String), VecDeque<f64>>,
     active_positions: HashMap<(String, String), Position>,

@@ -25,29 +25,22 @@ pub fn load_market_data<P: AsRef<Path>>(path: P) -> Result<DataFrame> {
     }
 
     files.sort();
-    let mut dfs: Vec<DataFrame> = Vec::with_capacity(files.len());
-    for f in &files {
-        let df = ParquetReader::new(std::fs::File::open(f)?).finish()?;
-        dfs.push(df);
-    }
-    // Use vertical stacking by moving ownership instead of mut borrowing repeatedly.
-    let mut iter = dfs.into_iter();
-    let mut acc = iter
-        .next()
-        .ok_or_else(|| anyhow!("No dataframes loaded"))?;
-    for df_part in iter {
-        acc.vstack_mut(&df_part)?; // safe: we only borrow acc mutably here, df_part moved
-    }
-    Ok(acc)
+    let lazy_frames: Vec<LazyFrame> = files
+        .iter()
+        .map(|f| LazyFrame::scan_parquet(f.as_str(), ScanArgsParquet::default()))
+        .collect::<PolarsResult<Vec<_>>>()?;
+
+    let acc = concat(lazy_frames, UnionArgs::default())?;
+    Ok(acc.collect()?)
 }
 
 pub fn filter_contract_by_prefix(df: DataFrame, prefix_a: &str, prefix_b: &str) -> Result<DataFrame> {
-    let contract_series = df.column("Contract")?.str()?;
-    let mask: BooleanChunked = contract_series
+    let contract_col = df.column("Contract")?.str()?;
+    let bools: BooleanChunked = contract_col
         .into_iter()
-        .map(|opt_s| opt_s.map(|s| s.starts_with(prefix_a) || s.starts_with(prefix_b)))
+        .map(|opt| opt.map(|s| s.starts_with(prefix_a) || s.starts_with(prefix_b)))
         .collect();
-    df.filter(&mask).map_err(|e| anyhow!(e.to_string()))
+    Ok(df.filter(&bools)?)
 }
 
 pub fn normalize_date_to_bar(mut df: DataFrame) -> Result<DataFrame> {
@@ -97,28 +90,26 @@ pub fn normalize_date_to_bar(mut df: DataFrame) -> Result<DataFrame> {
         nulls_last: false,
         multithreaded: true,
         maintain_order: false,
+        limit: None,
     };
     unique_days = unique_days.sort(sort_opts)?; // ascending
     unique_days.rename("__day_key".into());
 
     let bar_vec: Vec<u32> = (0..unique_days.len() as u32).collect();
     let bar_series_map = Series::new("Bar".into(), bar_vec);
-    let map_df = DataFrame::new(vec![unique_days.clone(), bar_series_map])?;
+    let map_df = DataFrame::new(vec![unique_days.clone().into(), bar_series_map.into()])?;
 
     let mut orig_days = days_i32.into_series();
     orig_days.rename("__day_key".into());
-    let orig_df = DataFrame::new(vec![orig_days])?;
+    let orig_df = DataFrame::new(vec![orig_days.into()])?;
 
     let join_args = JoinArgs::new(JoinType::Left);
-    let joined = orig_df.join(&map_df, ["__day_key"], ["__day_key"], join_args)?;
+    let joined = orig_df.join(&map_df, ["__day_key"], ["__day_key"], join_args, None)?;
     let mut bar_series = joined.column("Bar")?.clone();
     bar_series.rename("Bar".into());
 
-    if df.get_column_index("Bar").is_some() {
-        df.replace("Bar", bar_series)?;
-    } else {
-        df.with_column(bar_series)?;
-    }
+    if df.get_column_index("Bar").is_some() { df.drop_in_place("Bar")?; }
+    df.with_column(bar_series)?;
     Ok(df)
 }
 
@@ -141,7 +132,7 @@ fn test_filter_contract_by_prefix() {
         "Close".into(),
         &[4500.0f64, 15000.0, 80.0, 1800.0, 4600.0, 130.0, 15200.0],
     );
-    let df = DataFrame::new(vec![contracts, prices]).unwrap();
+    let df = DataFrame::new(vec![contracts.into(), prices.into()]).unwrap();
 
     // Filter for ES and NQ contracts
     let df = filter_contract_by_prefix(df, "ES_", "NQ_").unwrap();
@@ -166,7 +157,7 @@ fn test_filter_contract_by_prefix() {
 fn test_filter_contract_by_prefix_empty_result() {
     let contracts = Series::new("Contract".into(), &["CL_202112", "GC_202112", "ZN_202112"]);
     let prices = Series::new("Close".into(), &[80.0f64, 1800.0, 130.0]);
-    let df = DataFrame::new(vec![contracts, prices]).unwrap();
+    let df = DataFrame::new(vec![contracts.into(), prices.into()]).unwrap();
 
     // Filter for prefixes that don't exist
     let df = filter_contract_by_prefix(df, "ES_", "NQ_").unwrap();
@@ -177,7 +168,7 @@ fn test_filter_contract_by_prefix_empty_result() {
 fn test_filter_contract_by_prefix_single_match() {
     let contracts = Series::new("Contract".into(), &["ES_202112", "CL_202112", "GC_202112"]);
     let prices = Series::new("Close".into(), &[4500.0f64, 80.0, 1800.0]);
-    let df = DataFrame::new(vec![contracts, prices]).unwrap();
+    let df = DataFrame::new(vec![contracts.into(), prices.into()]).unwrap();
 
     // Filter for only ES contracts
     let df = filter_contract_by_prefix(df, "ES_", "XX_").unwrap();
@@ -208,7 +199,7 @@ fn test_date_remap_simple() {
         ],
     );
     let prices = Series::new("Close".into(), &[1.0f64, 2.0, 3.0, 4.0, 5.0]);
-    let df = DataFrame::new(vec![dates, prices]).unwrap();
+    let df = DataFrame::new(vec![dates.into(), prices.into()]).unwrap();
     let df2 = normalize_date_to_bar(df).unwrap();
     let date_series = df2.column("Bar").unwrap();
     assert_eq!(date_series.dtype(), &DataType::UInt32);

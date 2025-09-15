@@ -3,7 +3,8 @@ use crate::params::Params;
 // use crate::strategy::*;
 use anyhow::Result;
 use polars::frame::DataFrame;
-use polars::prelude::{ChunkCompare, ChunkUnique};
+use polars::prelude::*;
+use polars::series::ChunkCompareEq;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -52,15 +53,23 @@ struct Engine<'a> {
     contract_expiry_date: HashMap<String, u32>,
 }
 
-fn build_expiry_date(md: &DataFrame) -> HashMap<String, u32> {
-    let contract_expiry_date: HashMap<String, u32> = HashMap::new();
-
-    contract_expiry_date
+fn build_expiry_date(df: &DataFrame) -> Result<HashMap<String, u32>> {
+    // Single pass computation of max Bar per Contract without cloning or lazy execution.
+    let mut expiry: HashMap<String, u32> = HashMap::new();
+    let contracts = df.column("Contract")?.str()?;
+    let bars = df.column("Bar")?.u32()?;
+    for i in 0..df.height() {
+        if let (Some(c), Some(b)) = (contracts.get(i), bars.get(i)) {
+            let entry = expiry.entry(c.to_string()).or_insert(b);
+            if b > *entry { *entry = b; }
+        }
+    }
+    Ok(expiry)
 }
+
 impl<'a> Engine<'a> {
     /// Create a new Engine with empty state.
     fn new(params: &'a Params) -> Self {
-        let single = params.commodity_a_prefix == params.commodity_b_prefix;
         Self {
             params,
             trade_log: Vec::new(),
@@ -77,7 +86,7 @@ fn prepare_data_today(
     let mut a_contracts: Vec<ContractData> = Vec::new();
     let mut b_contracts: Vec<ContractData> = Vec::new();
     // Filter rows where Bar == day
-    let mask = df.column("Bar")?.equal(day)?;
+    let mask = df.column("Bar")?.u32()?.equal(day);
     let today_df = df.filter(&mask)?;
 
     let contracts = today_df.column("Contract")?.str()?;
@@ -107,10 +116,8 @@ fn prepare_data_today(
 }
 
 pub fn run(self: &mut Self, df: &DataFrame) -> Result<()> {
-    let date_series = df.column("Bar")?.u32()?;
-
-    self.contract_expiry_date = build_expiry_date(&df);
-    let mut trading_days: Vec<u32> = date_series
+    self.contract_expiry_date = build_expiry_date(df)?;
+    let mut trading_days: Vec<u32> = df.column("Bar")?.u32()?
         .unique()?
         .into_iter()
         .filter_map(|x| x)
@@ -118,8 +125,8 @@ pub fn run(self: &mut Self, df: &DataFrame) -> Result<()> {
     trading_days.sort();
 
     for day in trading_days {
-        let (a_today, b_today) = self.prepare_data_today(&df, day)?;
-        // strategy.trade(engine.bar_count as u32, a_today, b_today);
+        let (a_today, b_today) = self.prepare_data_today(&df, day)?; // TODO: integrate with strategy
+        // strategy.trade(day, a_today, b_today);
     }
     Ok(())
 }
@@ -171,7 +178,7 @@ pub fn run_engine(path: &str, params: &Params) -> Result<()> {
     }
 
     let mut engine = Engine::new(params);
-    engine.run(&df);
+    engine.run(&df)?;
     Ok(())
 }
 // Aggregate statistics
