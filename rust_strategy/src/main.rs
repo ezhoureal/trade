@@ -1,11 +1,10 @@
 mod data;
 mod engine;
 mod params;
-// mod strategy; // temporarily disabled for testing data.rs without full strategy engine
+mod strategy;
 
 use anyhow::Result;
 use clap::Parser;
-use rayon::prelude::*; // added for parallel runs
 use serde::Serialize;
 
 // use crate::engine::run_engine;
@@ -15,11 +14,11 @@ use crate::params::Params;
 struct MultiPairResultEntry {
     commodity_a: String,
     commodity_b: String,
-    total_return: f64,
-    sharpe_ratio: f64,
-    win_rate: f64,
+    total_return: f32,
+    sharpe_ratio: f32,
+    win_rate: f32,
     total_trades: usize,
-    max_drawdown: f64,
+    max_drawdown: f32,
 }
 
 #[derive(Serialize)]
@@ -45,11 +44,11 @@ struct Cli {
 
     /// Entry z-score threshold
     #[arg(long = "entry-z", short = 'e', default_value_t = 2.0)]
-    entry_z: f64,
+    entry_z: f32,
 
     /// Exit z-score threshold
     #[arg(long = "exit-z", short = 'x', default_value_t = 0.5)]
-    exit_z: f64,
+    exit_z: f32,
 
     /// Enable debug logging
     #[arg(long = "debug", default_value_t = false)]
@@ -57,7 +56,7 @@ struct Cli {
 
     /// Days before a contract's final trading day to force-close positions
     #[arg(long = "expiry-close-days", default_value_t = 3)]
-    expiry_close_days: usize,
+    expiry_close_days: u32,
 
     /// Commodity A prefix (e.g. cu) for single-run mode
     #[arg(short = 'a', default_value = "ag")]
