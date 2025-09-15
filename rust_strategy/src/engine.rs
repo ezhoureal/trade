@@ -1,6 +1,6 @@
 use crate::data::{filter_contract_by_prefix, load_market_data, normalize_date_to_bar};
 use crate::params::Params;
-use crate::strategy::PairStrategy;
+use crate::strategy::{PairStrategy, TradeLogEntry};
 // use crate::strategy::*;
 use anyhow::Result;
 use polars::frame::DataFrame;
@@ -20,18 +20,19 @@ pub struct BackTestResult {
     pub max_drawdown: f32,
     pub final_value: f32,
     pub max_concurrent_positions: usize,
+    pub trade_log: Vec<TradeLogEntry>,
 }
 
 const STARTING_CASH: f32 = 100_000.0;
 /// Core engine object holding mutable simulation state to avoid long argument lists.
 pub struct Engine<'a> {
     params: &'a Params,
-    contract_expiry_date: HashMap<String, u32>,
     current_price: HashMap<String, f32>,
     equity_curve: Vec<f32>,
     equity: f32,
     cash: f32,
     open_positions: HashMap<String, Position>,
+    max_concurrent_positions: usize,
 }
 
 fn build_expiry_date(df: &DataFrame) -> Result<HashMap<String, u32>> {
@@ -57,63 +58,42 @@ pub enum PositionKind {
 }
 
 pub struct Position {
-    pub kind: PositionKind,
     pub entry_price: f32,
-    pub size: u32,
+    pub size: i32,
 }
 
-pub struct AccountStatus<'a> {
+pub type ContractsToday = Vec<ContractData>;
+#[derive(Clone, Debug)]
+pub struct ContractData {
+    pub name: String,
+    pub price: f32,
+    pub volume: u32,
+}
+
+pub struct AccountStatus {
     pub cash: f32,
     pub equity: f32,
-    pub positions: &'a HashMap<String, Position>,
 }
 
 pub trait Broker {
-    fn buy(&mut self, symbol: &str, qty: u32);
-    fn sell(&mut self, symbol: &str, qty: u32);
+    fn buy(&mut self, symbol: &str, qty: u32) -> Option<i32>;
+    fn sell(&mut self, symbol: &str, qty: u32) -> Option<i32>;
 
-    fn get_status(&'_ self) -> AccountStatus<'_>;
+    fn get_status(&'_ self) -> AccountStatus;
 }
 
 impl<'a> Broker for Engine<'a> {
-    fn buy(&mut self, symbol: &str, qty: u32) {
-        match self.current_price.get(symbol) {
-            Some(price) => {
-                self.cash -= price * qty as f32;
-                let pos = self
-                    .open_positions
-                    .entry(symbol.to_string())
-                    .or_insert(Position {
-                        kind: PositionKind::Long,
-                        entry_price: *price,
-                        size: 0,
-                    });
-                pos.size += qty;
-            }
-            None => panic!("Current price for symbol {} not set", symbol),
-        }
+    fn buy(&mut self, symbol: &str, qty: u32) -> Option<i32> {
+        self.trade(symbol, qty as i32)
+    }
+    fn sell(&mut self, symbol: &str, qty: u32) -> Option<i32> {
+        self.trade(symbol, -(qty as i32))
     }
 
-    fn sell(&mut self, symbol: &str, qty: u32) {
-        match self.current_price.get(symbol) {
-            Some(price) => {
-                self.cash += price * qty as f32;
-                if let Some(pos) = self.open_positions.get_mut(symbol) {
-                    pos.size -= qty;
-                    if pos.size == 0 {
-                        self.open_positions.remove(symbol);
-                    }
-                }
-            }
-            None => panic!("Current price for symbol {} not set", symbol),
-        }
-    }
-
-    fn get_status(&'_ self) -> AccountStatus<'_> {
+    fn get_status(&'_ self) -> AccountStatus {
         AccountStatus {
             cash: self.cash,
             equity: self.equity,
-            positions: &self.open_positions,
         }
     }
 }
@@ -123,13 +103,35 @@ impl<'a> Engine<'a> {
     fn new(params: &'a Params) -> Engine<'a> {
         Self {
             params,
-            contract_expiry_date: HashMap::new(),
             equity_curve: Vec::new(),
-            equity: 0.0,
-            cash: 0.0,
+            equity: STARTING_CASH,
+            cash: STARTING_CASH,
             current_price: HashMap::new(),
             open_positions: HashMap::new(),
+            max_concurrent_positions: 0,
         }
+    }
+
+    fn trade(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        let cur_price = self.current_price.get(symbol)?;
+        self.cash -= cur_price * qty as f32;
+        let pos = self
+            .open_positions
+            .entry(symbol.to_string())
+            .or_insert(Position {
+                entry_price: *cur_price,
+                size: 0,
+            });
+        pos.size += qty;
+        let new_size = pos.size;
+        if new_size == 0 {
+            self.open_positions.remove(symbol);
+        }
+
+        if self.open_positions.len() > self.max_concurrent_positions {
+            self.max_concurrent_positions = self.open_positions.len();
+        }
+        Some(new_size)
     }
 
     fn prepare_data_today(
@@ -146,18 +148,15 @@ impl<'a> Engine<'a> {
         let contracts = today_df.column("Contract")?.str()?;
         let closes = today_df.column("Close")?.f32()?;
         let vols = today_df.column("Volume")?.f32()?;
-        let ois = today_df.column("OI")?.f32()?;
         // Collect today's contracts for each commodity
         for i in 0..today_df.height() {
             let contract = contracts.get(i).unwrap();
             let close = closes.get(i).unwrap();
             let vol = vols.get(i).unwrap();
-            let oi = ois.get(i).unwrap();
             let contract_data = ContractData {
                 name: contract.to_string(),
                 price: close as f32,
                 volume: vol as u32,
-                oi: oi as u32,
             };
             if contract.starts_with(&self.params.commodity_a_prefix) {
                 a_contracts.push(contract_data);
@@ -166,6 +165,20 @@ impl<'a> Engine<'a> {
             }
         }
         Ok((a_contracts, b_contracts))
+    }
+
+    fn update_equity(self: &mut Self) {
+        let position_value: f32 = self
+            .open_positions
+            .iter()
+            .filter_map(|(symbol, pos)| {
+                self.current_price
+                    .get(symbol)
+                    .map(|price| price * pos.size as f32)
+            })
+            .sum();
+        self.equity = self.cash + position_value;
+        self.equity_curve.push(self.equity);
     }
 
     pub fn run(self: &mut Self, df: &DataFrame) -> Result<BackTestResult> {
@@ -181,20 +194,49 @@ impl<'a> Engine<'a> {
         let mut strategy = PairStrategy::new(self.params, contract_expiry_date);
         for day in trading_days {
             let (a_today, b_today) = self.prepare_data_today(&df, day)?;
-            // Pass mutable self as broker only during the trade call; no internal storage to avoid aliasing.
+            self.current_price = a_today
+                .iter()
+                .chain(b_today.iter())
+                .map(|c| (c.name.clone(), c.price))
+                .collect();
+            self.update_equity();
+
             strategy.trade(day, a_today, b_today, self)?;
         }
+
+        let trades = strategy.move_log();
+        let won_trade = trades.iter().filter(|t| t.ret > 0.0).count();
         Ok(BackTestResult {
-            total_return: 0.0,
-            sharpe_ratio: 0.0,
-            total_trades: 0,
-            winning_trades: 0,
-            losing_trades: 0,
-            win_rate: 0.0,
-            max_drawdown: 0.0,
-            final_value: 0.0,
-            max_concurrent_positions: todo!(),
+            total_return: self.equity - STARTING_CASH,
+            sharpe_ratio: calc_sharpe(&self.equity_curve),
+            total_trades: trades.len(),
+            winning_trades: won_trade,
+            losing_trades: trades.len() - won_trade,
+            win_rate: if trades.len() > 0 {
+                won_trade as f32 / trades.len() as f32
+            } else {
+                0.0
+            },
+            max_drawdown: self.calc_drawdown(),
+            final_value: self.equity,
+            max_concurrent_positions: self.max_concurrent_positions,
+            trade_log: trades,
         })
+    }
+
+    fn calc_drawdown(self: &Self) -> f32 {
+        let mut peak = f32::MIN;
+        let mut max_dd = 0.0;
+        for v in &self.equity_curve {
+            if *v > peak {
+                peak = *v;
+            }
+            let dd = peak - *v;
+            if dd > max_dd {
+                max_dd = dd;
+            }
+        }
+        max_dd
     }
 }
 
@@ -216,15 +258,6 @@ fn calc_sharpe(equity_curve: &[f32]) -> f32 {
 
     let sharpe = if std > 0.0 { mean / std } else { 0.0 };
     sharpe
-}
-
-pub type ContractsToday = Vec<ContractData>;
-#[derive(Clone, Debug)]
-pub struct ContractData {
-    pub name: String,
-    pub price: f32,
-    pub volume: u32,
-    pub oi: u32,
 }
 
 pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
