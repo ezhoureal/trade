@@ -10,7 +10,6 @@ use serde::Serialize;
 
 // use crate::engine::run_engine;
 use crate::params::Params;
-use crate::data::load_market_data;
 
 #[derive(Serialize, Clone)]
 struct MultiPairResultEntry {

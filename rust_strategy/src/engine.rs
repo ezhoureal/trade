@@ -2,11 +2,9 @@ use crate::data::{filter_contract_by_prefix, load_market_data, normalize_date_to
 use crate::params::Params;
 // use crate::strategy::*;
 use anyhow::Result;
-use chrono::NaiveDate;
 use polars::frame::DataFrame;
-use polars::prelude::{col, ChunkCompare, ChunkUnique};
+use polars::prelude::{ChunkCompare, ChunkUnique};
 use serde::Serialize;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
@@ -55,7 +53,7 @@ struct Engine<'a> {
 }
 
 fn build_expiry_date(md: &DataFrame) -> HashMap<String, u32> {
-    let mut contract_expiry_date: HashMap<String, u32> = HashMap::new();
+    let contract_expiry_date: HashMap<String, u32> = HashMap::new();
 
     contract_expiry_date
 }
