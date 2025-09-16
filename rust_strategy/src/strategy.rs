@@ -591,4 +591,95 @@ mod tests {
             "shouldn't enter when expiry is near"
         );
     }
+
+    #[test]
+    fn close_applies_transaction_costs() {
+        // Params with non-zero transaction cost
+        let mut params = base_params();
+        params.transaction_cost_pct = 0.001; // 10 bps per leg
+                                             // Ensure exit_z low enough to force exit after outlier reverts
+        params.exit_z = 0.5;
+        let mut expiry: HashMap<String, u32> = HashMap::new();
+        expiry.insert("A1".into(), 50);
+        expiry.insert("B1".into(), 50);
+        let mut strat = PairStrategy::new(&params, expiry);
+        let mut broker = TestBroker::new();
+
+        // Build history to trigger long entry on negative outlier spread.
+        // We'll control prices so spread sequence ends with a large negative to enter,
+        // then we add one reverting bar to trigger close via reversion logic.
+        let spreads = [-1.0, -1.1, -0.9, -1.0, -3.0];
+        for (i, s) in spreads.iter().enumerate() {
+            run_bar(
+                &mut strat,
+                &mut broker,
+                (i + 1) as u32,
+                10.0 + s, // price_a
+                10.0,     // price_b (fixed)
+                "A1",
+                "B1",
+                20_000, // higher volume so size cap = 1% = 200
+            );
+        }
+        // Position should be open
+        assert_eq!(strat.active_positions.len(), 1, "Expected open position");
+        let pos_snapshot = {
+            let (_k, v) = strat.active_positions.iter().next().unwrap();
+            v.clone()
+        };
+        assert!(matches!(pos_snapshot.kind, PositionKind::Long));
+
+        // Record entry data for later expected PnL calculation
+        let entry_spread = pos_snapshot.entry_spread; // should be last spread (-3.0)
+        let size = pos_snapshot.size as f32; // expected 200 (1% of 20_000)
+        let gross_notional = pos_snapshot.gross_notional; // size * (price_a + price_b) at entry
+
+        // Add a reverting bar: spread moves back near -1.0 so z will shrink below exit_z
+        run_bar(
+            &mut strat,
+            &mut broker,
+            (spreads.len() + 1) as u32,
+            9.0,  // price_a so spread = -1.0
+            10.0, // price_b
+            "A1",
+            "B1",
+            20_000,
+        );
+
+        // Position should now be closed and exactly one trade logged.
+        assert_eq!(strat.active_positions.len(), 0, "Position not closed");
+        assert_eq!(strat.trade_log.len(), 1, "Expected one trade log entry");
+        let trade = &strat.trade_log[0];
+        assert_eq!(trade.reason, "reversion");
+
+        // Expected gross PnL: (exit_spread - entry_spread) * size  (Long position)
+        // entry_spread ≈ -3.0, exit_spread ≈ -1.0 => diff = 2.0
+        let expected_gross = (trade.exit_spread - entry_spread) * size; // 2.0 * size
+                                                                        // Costs: 2 * transaction_cost_pct * gross_notional
+        let expected_costs = 2.0 * params.transaction_cost_pct * gross_notional;
+        let expected_net = expected_gross - expected_costs;
+
+        // Allow tiny float tolerance
+        let tol = 1e-4;
+        assert!(
+            (trade.ret - expected_net).abs() < tol,
+            "ret mismatch: got {:.6}, expected {:.6} (gross {:.6} costs {:.6})",
+            trade.ret,
+            expected_net,
+            expected_gross,
+            expected_costs
+        );
+
+        // ret_pct should be net / gross_notional
+        let expected_ret_pct = expected_net / gross_notional;
+        assert!(
+            (trade.ret_pct - expected_ret_pct).abs() < tol,
+            "ret_pct mismatch: got {:.6}, expected {:.6}",
+            trade.ret_pct,
+            expected_ret_pct
+        );
+
+        // Basic sanity: gross should be positive, costs positive, net slightly less than gross
+        assert!(expected_gross > 0.0 && expected_costs > 0.0 && expected_net < expected_gross);
+    }
 }
