@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    engine::{Broker, ContractsToday, PositionKind},
+    engine::{Broker, ContractData, ContractsToday, PositionKind},
     params::Params,
 };
 #[derive(Debug, Serialize)]
@@ -27,6 +27,7 @@ pub struct PairPosition {
     entry_z: f32,
     entry_bar: u32,
     entry_spread: f32,
+    capital_allocated: f32, // exposure at entry (for PnL % calculation)
     size: u32,
 }
 
@@ -126,7 +127,7 @@ impl<'a> PairStrategy<'a> {
             exit_bar: self.bar_count,
             entry_z: pos.entry_z,
             ret: trade_ret * pos.size as f32,
-            ret_pct: trade_ret / pos.entry_spread.abs(),
+            ret_pct: trade_ret / pos.capital_allocated,
             entry_spread: pos.entry_spread,
             exit_spread: self.cur_price(&pair).unwrap(),
             reason: reason.into(),
@@ -187,14 +188,68 @@ impl<'a> PairStrategy<'a> {
         Some(())
     }
 
-    fn enter(
+    fn is_near_expiry(&self, contract: &str) -> bool {
+        const EXPIRY_BUFFER: u32 = 7;
+        let cur_day = self.bar_count;
+        self.contract_expiry
+            .get(contract)
+            .map(|last| *last <= cur_day + EXPIRY_BUFFER)
+            .unwrap_or(false)
+    }
+
+    fn try_enter(
         &mut self,
-        pair: (String, String),
-        kind: PositionKind,
-        z: f32,
-        size: u32,
+        contr_a: &ContractData,
+        contr_b: &ContractData,
         broker: &mut dyn Broker,
     ) -> Option<()> {
+        if contr_a.name >= contr_b.name {
+            return None; // avoid duplicate pairs
+        }
+        let pair = (contr_a.name.clone(), contr_b.name.clone());
+        if self.active_positions.contains_key(&pair) {
+            return None;
+        }
+        if self.is_near_expiry(&contr_a.name) || self.is_near_expiry(&contr_b.name) {
+            return None;
+        }
+        let hist = self.spread_histories.get(&pair)?;
+        if hist.len() < self.params.lookback_zscore {
+            return None;
+        }
+        let z = self.calc_z(hist)?;
+
+        if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
+            eprintln!(
+                "Candidate {:?} z={:.3} (threshold {})",
+                pair, z, self.params.entry_z
+            );
+        }
+        if z.abs() <= self.params.entry_z {
+            return None;
+        }
+        let kind = if z > 0.0 {
+            PositionKind::Short
+        } else {
+            PositionKind::Long
+        };
+
+        let status = broker.get_status();
+        if status.cash <= 0.0 {
+            return None;
+        }
+        const LEVERAGE: f32 = 3.0;
+        let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
+        let leg_prices = contr_a.price.abs() + contr_b.price.abs();
+        let mut size: u32 = (safe_exposure / leg_prices).floor() as u32;
+
+        let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
+        let vol_cap_u = vol_cap.floor() as u32;
+        size = size.min(vol_cap_u);
+
+        if size <= 0 {
+            return None;
+        }
         match kind {
             PositionKind::Long => {
                 broker.buy(pair.0.as_str(), size);
@@ -213,19 +268,11 @@ impl<'a> PairStrategy<'a> {
                 entry_bar: self.bar_count,
                 entry_spread: self.cur_price(&pair)?,
                 entry_z: z,
+                capital_allocated: size as f32 * leg_prices,
                 size: size,
             },
         );
         Some(())
-    }
-
-    fn is_near_expiry(&self, contract: &str) -> bool {
-        const EXPIRY_BUFFER: u32 = 7;
-        let cur_day = self.bar_count;
-        self.contract_expiry
-            .get(contract)
-            .map(|last| *last <= cur_day + EXPIRY_BUFFER)
-            .unwrap_or(false)
     }
 
     fn try_enter_positions(
@@ -242,56 +289,7 @@ impl<'a> PairStrategy<'a> {
 
         for contr_a in a.iter() {
             for contr_b in b.iter() {
-                if contr_a.name >= contr_b.name {
-                    continue; // avoid duplicate pairs
-                }
-                let pair = (contr_a.name.clone(), contr_b.name.clone());
-                if self.active_positions.contains_key(&pair) {
-                    continue;
-                }
-                if self.is_near_expiry(&contr_a.name) || self.is_near_expiry(&contr_b.name) {
-                    continue;
-                }
-                let hist = self.spread_histories.get(&pair)?;
-                if hist.len() < self.params.lookback_zscore {
-                    continue;
-                }
-                let z = self.calc_z(hist)?;
-
-                if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
-                    eprintln!(
-                        "Candidate {:?} z={:.3} (threshold {})",
-                        pair, z, self.params.entry_z
-                    );
-                }
-                if z.abs() <= self.params.entry_z {
-                    continue;
-                }
-                let kind = if z > 0.0 {
-                    PositionKind::Short
-                } else {
-                    PositionKind::Long
-                };
-
-                let status = broker.get_status();
-                if status.cash <= 0.0 {
-                    continue;
-                }
-                const LEVERAGE: f32 = 3.0;
-                let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
-                let allocation = safe_exposure.min(status.equity).min(status.cash);
-                let leg_prices = contr_a.price.abs() + contr_b.price.abs();
-                let mut size: u32 = (allocation / leg_prices).floor() as u32;
-
-                let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
-                let vol_cap_u = vol_cap.floor() as u32;
-                size = size.min(vol_cap_u);
-
-                if size <= 0 {
-                    continue;
-                }
-                self.enter(pair, kind, z, size, broker);
-                return Some(());
+                self.try_enter(contr_a, contr_b, broker);
             }
         }
         Some(())
