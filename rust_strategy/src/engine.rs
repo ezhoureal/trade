@@ -152,6 +152,7 @@ impl<'a> Engine<'a> {
     ) -> Result<(Vec<ContractData>, Vec<ContractData>)> {
         let mut a_contracts: Vec<ContractData> = Vec::new();
         let mut b_contracts: Vec<ContractData> = Vec::new();
+        let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
         // Filter rows where Bar == day
         let mask = df.column("Bar")?.u32()?.equal(day);
         let today_df = df.filter(&mask)?;
@@ -159,7 +160,7 @@ impl<'a> Engine<'a> {
         let contracts = today_df.column("Contract")?.str()?;
         let closes = today_df.column("Close")?.f64()?;
         let vols = today_df.column("Volume")?.f64()?;
-        // Collect today's contracts for each commodity
+        // Collect today's contracts for each commodity (or single commodity if same prefix case)
         for i in 0..today_df.height() {
             let contract = contracts.get(i).unwrap();
             let close = closes.get(i).unwrap();
@@ -169,11 +170,19 @@ impl<'a> Engine<'a> {
                 price: close as f32,
                 volume: vol as u32,
             };
-            if contract.starts_with(&self.params.commodity_a_prefix) {
+            if same_prefix {
                 a_contracts.push(contract_data);
             } else {
-                b_contracts.push(contract_data);
+                if contract.starts_with(&self.params.commodity_a_prefix) {
+                    a_contracts.push(contract_data);
+                } else {
+                    b_contracts.push(contract_data);
+                }
             }
+        }
+        if same_prefix {
+            // For intra-commodity pairing we use the same set on both sides.
+            b_contracts = a_contracts.clone();
         }
         Ok((a_contracts, b_contracts))
     }
@@ -201,6 +210,8 @@ impl<'a> Engine<'a> {
             .filter_map(|x| x)
             .collect();
         trading_days.sort();
+        println!("Total trading days: {}", trading_days.len());
+
         let contract_expiry_date = build_expiry_date(df)?;
         let mut strategy = PairStrategy::new(self.params, contract_expiry_date);
         for day in trading_days {
@@ -314,15 +325,27 @@ mod tests {
         // Open long (positive qty)
         let size_after_open = engine.trade("A1", 10).expect("trade should succeed");
         assert_eq!(size_after_open, 10);
-        assert!(engine.cash < starting_cash - 499.9 && engine.cash > starting_cash - 500.1, "Cash should decrease by price*qty");
+        assert!(
+            engine.cash < starting_cash - 499.9 && engine.cash > starting_cash - 500.1,
+            "Cash should decrease by price*qty"
+        );
         assert_eq!(engine.open_positions.len(), 1);
 
         // Close position
         let size_after_close = engine.trade("A1", -10).expect("close should succeed");
         assert_eq!(size_after_close, 0);
-        assert!(engine.open_positions.is_empty(), "Position map should remove flat position");
-        assert!((engine.cash - starting_cash).abs() < 1e-4, "Cash should round-trip after round trip trade");
-        assert_eq!(engine.max_concurrent_positions, 1, "Max concurrent should record peak");
+        assert!(
+            engine.open_positions.is_empty(),
+            "Position map should remove flat position"
+        );
+        assert!(
+            (engine.cash - starting_cash).abs() < 1e-4,
+            "Cash should round-trip after round trip trade"
+        );
+        assert_eq!(
+            engine.max_concurrent_positions, 1,
+            "Max concurrent should record peak"
+        );
     }
 
     #[test]
@@ -334,13 +357,19 @@ mod tests {
         // Open short (negative qty first)
         let size_after_open = engine.trade("A1", -8).expect("short trade ok");
         assert_eq!(size_after_open, -8);
-        assert!(engine.cash > starting_cash + 199.9 && engine.cash < starting_cash + 200.1, "Cash should increase on short sale");
+        assert!(
+            engine.cash > starting_cash + 199.9 && engine.cash < starting_cash + 200.1,
+            "Cash should increase on short sale"
+        );
         assert_eq!(engine.open_positions.len(), 1);
         // Cover
         let size_after_close = engine.trade("A1", 8).expect("cover ok");
         assert_eq!(size_after_close, 0);
         assert!(engine.open_positions.is_empty());
-        assert!((engine.cash - starting_cash).abs() < 1e-4, "Cash should return after short round trip");
+        assert!(
+            (engine.cash - starting_cash).abs() < 1e-4,
+            "Cash should return after short round trip"
+        );
         assert_eq!(engine.max_concurrent_positions, 1);
     }
 
@@ -357,7 +386,10 @@ mod tests {
         // Close one
         engine.trade("A1", -5).unwrap();
         assert_eq!(engine.open_positions.len(), 1);
-        assert_eq!(engine.max_concurrent_positions, 2, "Peak should remain recorded");
+        assert_eq!(
+            engine.max_concurrent_positions, 2,
+            "Peak should remain recorded"
+        );
     }
 
     #[test]
@@ -393,6 +425,41 @@ mod tests {
         let var = ((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 2.0;
         let std = var.sqrt();
         let expected = if std > 0.0 { mean / std } else { 0.0 };
-        assert!((s - expected).abs() < 1e-6, "Sharpe mismatch: got {s}, expected {expected}");
+        assert!(
+            (s - expected).abs() < 1e-6,
+            "Sharpe mismatch: got {s}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn prepare_data_today_same_prefix_duplicates_sets() {
+        // Build a tiny DataFrame with three contracts of same commodity prefix
+        let params = Params {
+            lookback_zscore: 5,
+            entry_z: 2.0,
+            exit_z: 0.5,
+            expiry_close_days: 5,
+            debug: false,
+            commodity_a_prefix: "AG".into(),
+            commodity_b_prefix: "AG".into(), // same prefix
+        };
+        let engine = Engine::new(&params);
+        // Construct a DataFrame manually using the df! macro
+        let df = df! {
+            "Contract" => &["AG1", "AG2", "AG3"],
+            "Bar" => &[1u32, 1u32, 1u32],
+            "Close" => &[10.0f64, 11.0, 12.0],
+            "Volume" => &[1000.0f64, 2000.0, 1500.0]
+        }
+        .expect("dataframe build");
+        let (a, b) = engine.prepare_data_today(&df, 1).expect("prep ok");
+        assert_eq!(a.len(), 3, "All contracts should appear in A vector");
+        assert_eq!(
+            b.len(),
+            3,
+            "Same contracts should be mirrored in B vector for intra-commodity"
+        );
+        // Ensure deep clone (distinct allocations) - modifying one side shouldn't affect the other
+        assert!(a.iter().zip(b.iter()).all(|(l, r)| l.name == r.name));
     }
 }

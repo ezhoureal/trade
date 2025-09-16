@@ -125,8 +125,8 @@ impl<'a> PairStrategy<'a> {
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
             entry_z: pos.entry_z,
-            ret: trade_ret,
-            ret_pct: trade_ret / pos.entry_spread,
+            ret: trade_ret * pos.size as f32,
+            ret_pct: trade_ret / pos.entry_spread.abs(),
             entry_spread: pos.entry_spread,
             exit_spread: self.cur_price(&pair).unwrap(),
             reason: reason.into(),
@@ -135,7 +135,7 @@ impl<'a> PairStrategy<'a> {
     }
 
     // compute mean, std, z of last value; returns (z, last_spread)
-    fn calc_z(&self, hist: &VecDeque<f32>) -> Option<(f32, f32)> {
+    fn calc_z(&self, hist: &VecDeque<f32>) -> Option<f32> {
         if hist.is_empty() {
             return None;
         }
@@ -154,7 +154,7 @@ impl<'a> PairStrategy<'a> {
             return None;
         }
         let last = *hist.back()?;
-        Some(((last - mean) / std, last))
+        Some((last - mean) / std)
     }
 
     fn push_spread(&mut self, pair: (String, String), spread: f32) {
@@ -174,8 +174,8 @@ impl<'a> PairStrategy<'a> {
         for (pair, _pos) in self.active_positions.iter() {
             let hist = self.spread_histories.get(pair)?;
             if hist.len() >= self.params.lookback_zscore {
-                let (z, _) = self.calc_z(hist)?;
-                if z.abs() <= self.params.exit_z {
+                let z = self.calc_z(hist)?;
+                if z.abs() <= self.params.exit_z || z.abs() > self.params.entry_z * 2.0 {
                     to_close.push(pair.clone());
                 }
             }
@@ -256,7 +256,7 @@ impl<'a> PairStrategy<'a> {
                 if hist.len() < self.params.lookback_zscore {
                     continue;
                 }
-                let (z, cur_price) = self.calc_z(hist)?;
+                let z = self.calc_z(hist)?;
 
                 if self.params.debug && z.abs() > self.params.entry_z * 0.5 {
                     eprintln!(
@@ -280,7 +280,8 @@ impl<'a> PairStrategy<'a> {
                 const LEVERAGE: f32 = 3.0;
                 let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
                 let allocation = safe_exposure.min(status.equity).min(status.cash);
-                let mut size: u32 = (allocation / cur_price.abs()).floor() as u32;
+                let leg_prices = contr_a.price.abs() + contr_b.price.abs();
+                let mut size: u32 = (allocation / leg_prices).floor() as u32;
 
                 let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
                 let vol_cap_u = vol_cap.floor() as u32;
@@ -290,6 +291,7 @@ impl<'a> PairStrategy<'a> {
                     continue;
                 }
                 self.enter(pair, kind, z, size, broker);
+                return Some(());
             }
         }
         Some(())
@@ -324,15 +326,18 @@ impl<'a> PairStrategy<'a> {
     }
 
     fn stop_loss(&mut self, broker: &mut dyn Broker) -> Option<()> {
-        const LOSS_RATIO_THRESHOLD: f32 = 0.05;
+        // Risk cap: e.g. 2% of equity per trade
+        const LOSS_RATIO_THRESHOLD: f32 = -0.02;
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, pos) in self.active_positions.iter() {
-            let cur_price = self.cur_price(pair).unwrap();
-            let loss = match pos.kind {
-                PositionKind::Long => pos.entry_spread - cur_price,
-                PositionKind::Short => cur_price - pos.entry_spread,
+            let cur_price = self.cur_price(pair)?;
+            let trade_ret = match pos.kind {
+                PositionKind::Long => cur_price - pos.entry_spread,
+                PositionKind::Short => pos.entry_spread - cur_price,
             };
-            if loss / pos.entry_spread > LOSS_RATIO_THRESHOLD {
+            let pnl = trade_ret * pos.size as f32;
+
+            if pnl < LOSS_RATIO_THRESHOLD * broker.get_status().equity {
                 to_close.push(pair.clone());
             }
         }
