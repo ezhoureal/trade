@@ -98,7 +98,7 @@ impl<'a> PairStrategy<'a> {
         pos: PairPosition,
         reason: &str,
         broker: &mut dyn Broker,
-    ) -> Result<()> {
+    ) -> Option<()> {
         match pos.kind {
             PositionKind::Long => {
                 broker.sell(pair.0.as_str(), pos.size);
@@ -110,9 +110,7 @@ impl<'a> PairStrategy<'a> {
             }
         }
 
-        let cur_price = self
-            .cur_price(&pair)
-            .ok_or_else(|| anyhow::anyhow!("No current price for pair {}/{}", pair.0, pair.1))?;
+        let cur_price = self.cur_price(&pair)?;
         let trade_ret = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
@@ -133,7 +131,7 @@ impl<'a> PairStrategy<'a> {
             exit_spread: self.cur_price(&pair).unwrap(),
             reason: reason.into(),
         });
-        Ok(())
+        Some(())
     }
 
     // compute mean, std, z of last value; returns (z, last_spread)
@@ -171,30 +169,22 @@ impl<'a> PairStrategy<'a> {
         entry.push_back(spread);
     }
 
-    fn close_reverted(&mut self, broker: &mut dyn Broker) {
+    fn close_reverted(&mut self, broker: &mut dyn Broker) -> Option<()> {
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, _pos) in self.active_positions.iter() {
-            if let Some(hist) = self.spread_histories.get(pair) {
-                if hist.len() >= self.params.lookback_zscore {
-                    if let Some((z, _)) = self.calc_z(hist) {
-                        if z.abs() < self.params.exit_z || z.abs() > 5.0 {
-                            to_close.push(pair.clone());
-                        }
-                    }
+            let hist = self.spread_histories.get(pair)?;
+            if hist.len() >= self.params.lookback_zscore {
+                let (z, _) = self.calc_z(hist)?;
+                if z.abs() <= self.params.exit_z {
+                    to_close.push(pair.clone());
                 }
             }
         }
         for pair in to_close {
-            // Flattened control flow using early continue to avoid deep nesting.
-            let Some(pos) = self.active_positions.remove(&pair) else {
-                continue;
-            };
-            if let Err(e) = self.close(pair, pos, "reversion", broker) {
-                if self.params.debug {
-                    eprintln!("close_reverted error: {e}");
-                }
-            }
+            let pos = self.active_positions.remove(&pair)?;
+            self.close(pair, pos, "reversion", broker)?;
         }
+        Some(())
     }
 
     fn enter(
@@ -328,12 +318,12 @@ impl<'a> PairStrategy<'a> {
         }
         for pair in to_close {
             let pos = self.active_positions.remove(&pair)?;
-            self.close(pair, pos, "expiry", broker).ok()?;
+            self.close(pair, pos, "expiry", broker)?;
         }
         Some(())
     }
 
-    fn stop_loss(&mut self, broker: &mut dyn Broker) {
+    fn stop_loss(&mut self, broker: &mut dyn Broker) -> Option<()> {
         const LOSS_RATIO_THRESHOLD: f32 = 0.05;
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, pos) in self.active_positions.iter() {
@@ -347,14 +337,10 @@ impl<'a> PairStrategy<'a> {
             }
         }
         for pair in to_close {
-            if let Some(pos) = self.active_positions.remove(&pair) {
-                if let Err(e) = self.close(pair, pos, "stop_loss", broker) {
-                    if self.params.debug {
-                        eprintln!("stop_loss close error: {e}");
-                    }
-                }
-            }
+            let pos = self.active_positions.remove(&pair)?;
+            self.close(pair, pos, "stop loss", broker)?;
         }
+        Some(())
     }
 }
 
