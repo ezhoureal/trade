@@ -1,7 +1,6 @@
 #[derive(Clone, Debug)]
 pub struct Params {
     pub lookback_zscore: usize,
-    pub lookback_performance: u32,
     pub entry_z: f32,
     pub exit_z: f32,
     pub expiry_close_days: u32, // days before contract's last appearance to force close

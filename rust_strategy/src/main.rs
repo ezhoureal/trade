@@ -87,7 +87,6 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
         lookback_zscore: cli.lookback_zscore,
         entry_z: cli.entry_z,
         exit_z: cli.exit_z,
-        lookback_performance: 50,
         expiry_close_days: cli.expiry_close_days,
         debug: cli.debug,
         commodity_a_prefix: a_canon,

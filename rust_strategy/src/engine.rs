@@ -57,6 +57,7 @@ pub enum PositionKind {
     Short,
 }
 
+#[allow(dead_code)]
 pub struct Position {
     pub entry_price: f32,
     pub size: i32,
@@ -146,8 +147,8 @@ impl<'a> Engine<'a> {
         let today_df = df.filter(&mask)?;
 
         let contracts = today_df.column("Contract")?.str()?;
-        let closes = today_df.column("Close")?.f32()?;
-        let vols = today_df.column("Volume")?.f32()?;
+        let closes = today_df.column("Close")?.f64()?;
+        let vols = today_df.column("Volume")?.f64()?;
         // Collect today's contracts for each commodity
         for i in 0..today_df.height() {
             let contract = contracts.get(i).unwrap();
@@ -276,169 +277,3 @@ pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
     let mut engine = Engine::new(params);
     engine.run(&df)
 }
-// Aggregate statistics
-// let total_trades = engine.trade_log.len();
-// let winning_trades = engine.trade_log.iter().filter(|t| t.ret > 0.0).count();
-// let losing_trades = total_trades - winning_trades;
-// let win_rate = if total_trades > 0 {
-//     winning_trades as f32 / total_trades as f32
-// } else {
-//     0.0
-// };
-
-// // Sharpe on equity changes per bar
-// let sharpe_ratio = calc_sharpe(&engine.equity_curve);
-
-// // Max drawdown
-// let mut peak = f32::MIN;
-// let mut max_dd = 0.0;
-// for v in &engine.equity_curve {
-//     if *v > peak {
-//         peak = *v;
-//     }
-//     let dd = peak - *v;
-//     if dd > max_dd {
-//         max_dd = dd;
-//     }
-// }
-
-// // Pair performance export
-// let mut pair_performance: HashMap<String, PairPerf> = HashMap::new();
-// for ((c1, c2), ps) in engine.pair_stats.into_iter() {
-//     pair_performance.insert(
-//         format!("{}/{}", c1, c2),
-//         PairPerf {
-//             trades: ps.trades,
-//             wins: ps.wins,
-//             total_return: ps.total_return,
-//             sharpe: ps.sharpe,
-//             success_score: ps.success_score,
-//         },
-//     );
-// }
-
-// Sort trade log so the largest magnitude winners/losers appear first (big losses & big gains).
-// engine.trade_log.sort_by(|a, b| {
-//     b.ret
-//         .abs()
-//         .partial_cmp(&a.ret.abs())
-//         .unwrap_or(Ordering::Equal)
-// });
-
-// Ok(EngineResult {
-//     final_value: engine.equity,
-//     sharpe_ratio,
-//     total_trades,
-//     winning_trades,
-//     losing_trades,
-//     win_rate,
-//     max_drawdown: max_dd,
-//     total_return: engine.equity - STARTING_CASH,
-//     max_concurrent_positions: engine.max_concurrent,
-//     pair_performance,
-//     trade_log: engine.trade_log,
-// })
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     fn mk_pos(entry_spread: f32, kind: PositionKind) -> Position {
-//         Position {
-//             pair: ("a".into(), "b".into()),
-//             kind,
-//             entry_z: 0.0,
-//             entry_bar: 0,
-//             entry_spread,
-//             size: 1,
-//             trade_id: 1,
-//         }
-//     }
-
-//     #[test]
-//     fn percent_moved_long_negative_entry_to_positive_exit() {
-//         // Case from user report: entry -210 -> exit 105, long spread raw move = 315; size=1 => PnL 315
-//         let pos = mk_pos(-210.0, PositionKind::LongSpread);
-//         let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
-//         // For a long spread we store raw_gain = cur_price * size (105)
-//         assert!(
-//             (raw_gain - 105.0).abs() < 1e-9,
-//             "expected raw_gain 105 got {}",
-//             raw_gain
-//         );
-//         assert!(
-//             (trade_ret - 315.0).abs() < 1e-9,
-//             "expected 315 trade_ret got {}",
-//             trade_ret
-//         );
-//     }
-
-//     #[test]
-//     fn percent_moved_short_positive_move_down() {
-//         // Short spread: entry 500 -> exit 350, raw directional move = 150 (profit); size=1 => PnL 150
-//         let pos = mk_pos(500.0, PositionKind::ShortSpread);
-//         let (raw_gain, trade_ret) = close_trade(&pos, 350.0);
-//         // For a short spread raw_gain = -cur_price * size (-350)
-//         assert!(
-//             (raw_gain + 350.0).abs() < 1e-9,
-//             "expected raw_gain -350 got {}",
-//             raw_gain
-//         );
-//         assert!(
-//             (trade_ret - 150.0).abs() < 1e-9,
-//             "expected 150 trade_ret got {}",
-//             trade_ret
-//         );
-//     }
-
-//     #[test]
-//     fn percent_moved_zero_entry_protected() {
-//         let pos = mk_pos(0.0, PositionKind::LongSpread);
-//         let (raw_gain, trade_ret) = close_trade(&pos, 10.0);
-//         assert!(
-//             (raw_gain - 10.0).abs() < 1e-9,
-//             "expected raw_gain 10 got {}",
-//             raw_gain
-//         );
-//         // entry spread zero -> move = 10 - 0 = 10; still valid
-//         assert_eq!(trade_ret, 10.0);
-//     }
-
-//     #[test]
-//     fn trade_return_long_negative_spread() {
-//         // Entry spread -210, exit +105 -> raw move = 315, size=1 => return 315
-//         let pos = mk_pos(-210.0, PositionKind::LongSpread);
-//         let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
-//         assert!(
-//             (raw_gain - 105.0).abs() < 1e-9,
-//             "expected raw_gain 105 got {}",
-//             raw_gain
-//         );
-//         assert!(
-//             (trade_ret - 315.0).abs() < 1e-6,
-//             "expected 315 got {}",
-//             trade_ret
-//         );
-//     }
-
-//     #[test]
-//     fn trade_return_scales_with_size() {
-//         // Same spread move as previous test but with size=4
-//         let mut pos = mk_pos(-210.0, PositionKind::LongSpread);
-//         pos.size = 4;
-//         let (raw_gain, trade_ret) = close_trade(&pos, 105.0);
-//         assert!(
-//             (raw_gain - 4.0 * 105.0).abs() < 1e-9,
-//             "expected raw_gain {} got {}",
-//             4.0 * 105.0,
-//             raw_gain
-//         );
-//         assert!(
-//             (trade_ret - 4.0 * 315.0).abs() < 1e-6,
-//             "expected {} got {}",
-//             4.0 * 315.0,
-//             trade_ret
-//         );
-//     }
-// }

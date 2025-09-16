@@ -14,6 +14,7 @@ pub struct TradeLogEntry {
     pub exit_bar: u32,
     pub entry_z: f32,
     pub ret: f32,
+    pub ret_pct: f32,
     pub size: u32,
     pub entry_spread: f32,
     pub exit_spread: f32,
@@ -75,7 +76,13 @@ impl<'a> PairStrategy<'a> {
         Ok(())
     }
 
-    pub fn move_log(self) -> Vec<TradeLogEntry> {
+    pub fn move_log(mut self) -> Vec<TradeLogEntry> {
+        self.trade_log.sort_by(|a, b| {
+            b.ret
+                .abs()
+                .partial_cmp(&a.ret.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         self.trade_log
     }
 
@@ -115,8 +122,8 @@ impl<'a> PairStrategy<'a> {
             .cur_price(&pair)
             .ok_or_else(|| anyhow::anyhow!("No current price for pair {}/{}", pair.0, pair.1))?;
         let trade_ret = match pos.kind {
-            PositionKind::Long => (cur_price - pos.entry_spread) / pos.entry_spread,
-            PositionKind::Short => (pos.entry_spread - cur_price) / pos.entry_spread,
+            PositionKind::Long => cur_price - pos.entry_spread,
+            PositionKind::Short => pos.entry_spread - cur_price,
         };
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
@@ -129,6 +136,7 @@ impl<'a> PairStrategy<'a> {
             exit_bar: self.bar_count,
             entry_z: pos.entry_z,
             ret: trade_ret,
+            ret_pct: trade_ret / pos.entry_spread,
             entry_spread: pos.entry_spread,
             exit_spread: self.cur_price(&pair).unwrap(),
             reason: reason.into(),
@@ -356,14 +364,13 @@ impl<'a> PairStrategy<'a> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use crate::{
-        engine::{AccountStatus, Broker, ContractData, PositionKind},
-        params::Params,
-        strategy::PairStrategy,
-    };
+    use crate::engine::{AccountStatus, ContractData};
+
+    use super::*;
 
     // Minimal mock broker implementing the Broker trait used by PairStrategy.
     // It keeps static cash/equity so sizing logic is deterministic and does not
@@ -405,7 +412,6 @@ mod tests {
     fn base_params() -> Params {
         Params {
             lookback_zscore: 5,
-            lookback_performance: 50,
             entry_z: 1.5,
             exit_z: 0.5,
             expiry_close_days: 3,
@@ -591,6 +597,10 @@ mod tests {
                 10_000,
             );
         }
-        assert_eq!(strat.active_positions.len(), 0, "shouldn't enter when expiry is near");
+        assert_eq!(
+            strat.active_positions.len(),
+            0,
+            "shouldn't enter when expiry is near"
+        );
     }
 }
