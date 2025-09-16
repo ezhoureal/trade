@@ -263,24 +263,34 @@ fn calc_drawdown(equity_curve: &[f32]) -> f32 {
 }
 
 fn calc_sharpe(equity_curve: &[f32]) -> f32 {
+    const PERIOD_PER_YEAR: f32 = 252.0;
     let returns: Vec<f32> = equity_curve
         .windows(2)
-        .map(|w| (w[1] - w[0]) / w[0]) // daily/periodic returns
+        .map(|w| (w[1] - w[0]) / w[0])
         .collect();
+
+    if returns.len() < 2 {
+        return 0.0;
+    }
+
     let mean = returns.iter().copied().sum::<f32>() / returns.len() as f32;
-    let var = returns
-        .iter()
+
+    let var = returns.iter()
         .map(|r| {
             let d = r - mean;
             d * d
         })
-        .sum::<f32>()
-        / returns.len() as f32;
+        .sum::<f32>() / (returns.len() as f32 - 1.0);
+
     let std = var.sqrt();
 
-    let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-    sharpe
+    if std > 0.0 {
+        (mean / std) * PERIOD_PER_YEAR.sqrt()
+    } else {
+        0.0
+    }
 }
+
 
 pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
     let df = load_market_data(path)?;
