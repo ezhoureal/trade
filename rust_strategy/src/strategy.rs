@@ -548,8 +548,8 @@ mod tests {
         );
         assert_eq!(strat.trade_log.len(), 1);
         assert_eq!(
-            strat.trade_log[0].reason, "stop_loss",
-            "Expected stop_loss reason, got {}",
+            strat.trade_log[0].reason, "stop loss",
+            "Expected stop loss reason, got {}",
             strat.trade_log[0].reason
         );
     }
