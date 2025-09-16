@@ -69,7 +69,7 @@ impl<'a> PairStrategy<'a> {
         self.close_expiring_positions(broker);
         self.close_reverted(broker);
 
-        self.try_enter_positions(&a, &b, broker)
+        self.try_enter_positions(a, b, broker)
             .ok_or(anyhow::anyhow!("failed"))?;
 
         self.stop_loss(broker);
@@ -90,14 +90,6 @@ impl<'a> PairStrategy<'a> {
         self.spread_histories
             .get(pair)
             .and_then(|hist| hist.back().copied())
-    }
-
-    // Gross exposure: sum of |spread| * size for all open positions using latest spread.
-    fn gross_exposure(&self) -> f32 {
-        self.active_positions
-            .iter()
-            .filter_map(|(pair, pos)| self.cur_price(pair).map(|p| p.abs() * pos.size as f32))
-            .sum()
     }
 
     fn close(
@@ -248,12 +240,18 @@ impl<'a> PairStrategy<'a> {
 
     fn try_enter_positions(
         &mut self,
-        commodity_a: &ContractsToday,
-        commodity_b: &ContractsToday,
+        mut a: ContractsToday,
+        mut b: ContractsToday,
         broker: &mut dyn Broker,
     ) -> Option<()> {
-        for contr_a in commodity_a.iter() {
-            for contr_b in commodity_b.iter() {
+        const MAX_CONTRACTS: usize = 5;
+        a.sort_by_key(|c| std::cmp::Reverse(c.volume));
+        b.sort_by_key(|c| std::cmp::Reverse(c.volume));
+        a.truncate(a.len().min(MAX_CONTRACTS));
+        b.truncate(b.len().min(MAX_CONTRACTS));
+
+        for contr_a in a.iter() {
+            for contr_b in b.iter() {
                 if contr_a.name >= contr_b.name {
                     continue; // avoid duplicate pairs
                 }
@@ -289,9 +287,9 @@ impl<'a> PairStrategy<'a> {
                 if status.cash <= 0.0 {
                     continue;
                 }
-                // Exposure-based sizing: cap gross exposure at 3x current equity.
-                let safe_exposure = 3.0 * status.equity - self.gross_exposure();
-                let allocation = safe_exposure.min(status.equity * 0.50).min(status.cash);
+                const LEVERAGE: f32 = 3.0;
+                let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
+                let allocation = safe_exposure.min(status.equity).min(status.cash);
                 let mut size: u32 = (allocation / cur_price.abs()).floor() as u32;
 
                 let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
@@ -330,17 +328,13 @@ impl<'a> PairStrategy<'a> {
         }
         for pair in to_close {
             let pos = self.active_positions.remove(&pair)?;
-            if let Err(e) = self.close(pair, pos, "expiry", broker) {
-                if self.params.debug {
-                    eprintln!("close_expiring error: {e}");
-                }
-            }
+            self.close(pair, pos, "expiry", broker).ok()?;
         }
         Some(())
     }
 
     fn stop_loss(&mut self, broker: &mut dyn Broker) {
-        const LOSS_RATIO_THRESHOLD: f32 = 0.2;
+        const LOSS_RATIO_THRESHOLD: f32 = 0.05;
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, pos) in self.active_positions.iter() {
             let cur_price = self.cur_price(pair).unwrap();
@@ -405,6 +399,7 @@ mod tests {
             AccountStatus {
                 cash: self.cash,
                 equity: self.equity,
+                gross_exposure: self.equity,
             }
         }
     }

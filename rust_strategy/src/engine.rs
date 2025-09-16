@@ -74,6 +74,7 @@ pub struct ContractData {
 pub struct AccountStatus {
     pub cash: f32,
     pub equity: f32,
+    pub gross_exposure: f32,
 }
 
 pub trait Broker {
@@ -95,6 +96,15 @@ impl<'a> Broker for Engine<'a> {
         AccountStatus {
             cash: self.cash,
             equity: self.equity,
+            gross_exposure: self
+                .open_positions
+                .iter()
+                .filter_map(|(symbol, pos)| {
+                    self.current_price
+                        .get(symbol)
+                        .map(|price| price * pos.size.abs() as f32)
+                })
+                .sum(),
         }
     }
 }

@@ -213,6 +213,9 @@ fn main() -> Result<()> {
         // test a single pair
         let params = build_params(&cli, &cli.commodity_a, &cli.commodity_b);
         let result = run_engine(&cli.data, &params)?;
+        println!("Total Return = {}", result.total_return);
+        println!("Sharpe Ratio = {}", result.sharpe_ratio);
+        println!("Win Rate = {}", result.win_rate);
         let json = serde_json::to_string_pretty(&result)?;
         if let Some(path) = cli.out.as_ref() {
             std::fs::write(path, json)?;
