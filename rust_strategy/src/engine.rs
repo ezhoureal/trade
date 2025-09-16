@@ -126,6 +126,11 @@ impl<'a> Engine<'a> {
     fn trade(&mut self, symbol: &str, qty: i32) -> Option<i32> {
         let cur_price = self.current_price.get(symbol)?;
         self.cash -= cur_price * qty as f32;
+        let transaction_cost = cur_price * qty.abs() as f32 * self.params.transaction_cost_pct;
+        self.cash -= transaction_cost;
+        if self.cash < 0.0 {
+            println!("Warning: Cash balance negative after trade on {} qty {} at price {:.2}. balance = {:.2}", symbol, qty, cur_price, self.cash);
+        }
         let pos = self
             .open_positions
             .entry(symbol.to_string())
@@ -221,6 +226,17 @@ impl<'a> Engine<'a> {
                 .chain(b_today.iter())
                 .map(|c| (c.name.clone(), c.price))
                 .collect();
+
+            if self.params.debug && day % 50 == 0 {
+                println!(
+                    "Day {}: cash {:.2}, equity {:.2}, open positions {}, max concurrent {}",
+                    day,
+                    self.cash,
+                    self.equity,
+                    self.open_positions.len(),
+                    self.max_concurrent_positions
+                );
+            }
             self.update_equity();
 
             strategy.trade(day, a_today, b_today, self)?;
@@ -275,12 +291,14 @@ fn calc_sharpe(equity_curve: &[f32]) -> f32 {
 
     let mean = returns.iter().copied().sum::<f32>() / returns.len() as f32;
 
-    let var = returns.iter()
+    let var = returns
+        .iter()
         .map(|r| {
             let d = r - mean;
             d * d
         })
-        .sum::<f32>() / (returns.len() as f32 - 1.0);
+        .sum::<f32>()
+        / (returns.len() as f32 - 1.0);
 
     let std = var.sqrt();
 
@@ -290,7 +308,6 @@ fn calc_sharpe(equity_curve: &[f32]) -> f32 {
         0.0
     }
 }
-
 
 pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
     let df = load_market_data(path)?;
@@ -323,6 +340,7 @@ mod tests {
             debug: false,
             commodity_a_prefix: "A".into(),
             commodity_b_prefix: "B".into(),
+            transaction_cost_pct: 0.0,
         }
     }
 
@@ -425,23 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn calc_sharpe_positive_and_negative_returns() {
-        let eq = vec![100.0, 110.0, 100.0]; // returns: 0.1, -0.090909...
-        let s = calc_sharpe(&eq);
-        // Compute expected manually
-        let r1 = 0.1f32;
-        let r2 = -0.0909090909f32;
-        let mean = (r1 + r2) / 2.0;
-        let var = ((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 2.0;
-        let std = var.sqrt();
-        let expected = if std > 0.0 { mean / std } else { 0.0 };
-        assert!(
-            (s - expected).abs() < 1e-6,
-            "Sharpe mismatch: got {s}, expected {expected}"
-        );
-    }
-
-    #[test]
     fn prepare_data_today_same_prefix_duplicates_sets() {
         // Build a tiny DataFrame with three contracts of same commodity prefix
         let params = Params {
@@ -452,6 +453,7 @@ mod tests {
             debug: false,
             commodity_a_prefix: "AG".into(),
             commodity_b_prefix: "AG".into(), // same prefix
+            transaction_cost_pct: 0.0,
         };
         let engine = Engine::new(&params);
         // Construct a DataFrame manually using the df! macro

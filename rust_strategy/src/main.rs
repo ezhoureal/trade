@@ -91,6 +91,7 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
         debug: cli.debug,
         commodity_a_prefix: a_canon,
         commodity_b_prefix: b_canon,
+        transaction_cost_pct: 0.0001, // default unless extended CLI adds option
     }
 }
 

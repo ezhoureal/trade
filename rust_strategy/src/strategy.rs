@@ -115,7 +115,7 @@ impl<'a> PairStrategy<'a> {
         let trade_ret = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
-        };
+        } - (pos.capital_allocated * self.params.transaction_cost_pct);
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
             kind: match pos.kind {
@@ -129,7 +129,7 @@ impl<'a> PairStrategy<'a> {
             ret: trade_ret * pos.size as f32,
             ret_pct: trade_ret / pos.capital_allocated,
             entry_spread: pos.entry_spread,
-            exit_spread: self.cur_price(&pair).unwrap(),
+            exit_spread: cur_price,
             reason: reason.into(),
         });
         Some(())
@@ -241,7 +241,7 @@ impl<'a> PairStrategy<'a> {
         const LEVERAGE: f32 = 3.0;
         let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
         let leg_prices = contr_a.price.abs() + contr_b.price.abs();
-        let mut size: u32 = (safe_exposure / leg_prices).floor() as u32;
+        let mut size: u32 = (safe_exposure.min(status.cash) / leg_prices).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
@@ -324,8 +324,8 @@ impl<'a> PairStrategy<'a> {
     }
 
     fn stop_loss(&mut self, broker: &mut dyn Broker) -> Option<()> {
-        // Risk cap: e.g. 2% of equity per trade
-        const LOSS_RATIO_THRESHOLD: f32 = -0.02;
+        // Risk cap: e.g. 2% of capital allocated to the trade (position-specific)
+        const LOSS_RATIO_THRESHOLD: f32 = -0.02; // -2% of allocated capital
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, pos) in self.active_positions.iter() {
             let cur_price = self.cur_price(pair)?;
@@ -335,7 +335,7 @@ impl<'a> PairStrategy<'a> {
             };
             let pnl = trade_ret * pos.size as f32;
 
-            if pnl < LOSS_RATIO_THRESHOLD * broker.get_status().equity {
+            if pnl < LOSS_RATIO_THRESHOLD * pos.capital_allocated {
                 to_close.push(pair.clone());
             }
         }
@@ -402,6 +402,7 @@ mod tests {
             debug: false,
             commodity_a_prefix: "A".into(),
             commodity_b_prefix: "B".into(),
+            transaction_cost_pct: 0.0,
         }
     }
 

@@ -7,4 +7,5 @@ pub struct Params {
     pub debug: bool,
     pub commodity_a_prefix: String,
     pub commodity_b_prefix: String,
+    pub transaction_cost_pct: f32,
 }
