@@ -27,7 +27,7 @@ pub struct PairPosition {
     entry_z: f32,
     entry_bar: u32,
     entry_spread: f32,
-    capital_allocated: f32, // exposure at entry (for PnL % calculation)
+    gross_notional: f32, // exposure at entry (for PnL % calculation)
     size: u32,
 }
 
@@ -84,6 +84,8 @@ impl<'a> PairStrategy<'a> {
                 .partial_cmp(&a.ret.abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let return_sum = self.trade_log.iter().map(|e| e.ret).sum::<f32>();
+        println!("Total return from all trades: {:.2}", return_sum);
         self.trade_log
     }
 
@@ -112,10 +114,11 @@ impl<'a> PairStrategy<'a> {
         }
 
         let cur_price = self.cur_price(&pair)?;
-        let trade_ret = match pos.kind {
+        let pnl = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
-        } - (pos.capital_allocated * self.params.transaction_cost_pct);
+        } * pos.size as f32
+            - self.params.transaction_cost_pct * pos.gross_notional * 2.0;
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
             kind: match pos.kind {
@@ -126,8 +129,8 @@ impl<'a> PairStrategy<'a> {
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
             entry_z: pos.entry_z,
-            ret: trade_ret * pos.size as f32,
-            ret_pct: trade_ret / pos.capital_allocated,
+            ret: pnl,
+            ret_pct: pnl / pos.gross_notional,
             entry_spread: pos.entry_spread,
             exit_spread: cur_price,
             reason: reason.into(),
@@ -268,7 +271,7 @@ impl<'a> PairStrategy<'a> {
                 entry_bar: self.bar_count,
                 entry_spread: self.cur_price(&pair)?,
                 entry_z: z,
-                capital_allocated: size as f32 * leg_prices,
+                gross_notional: size as f32 * leg_prices,
                 size: size,
             },
         );
@@ -335,7 +338,7 @@ impl<'a> PairStrategy<'a> {
             };
             let pnl = trade_ret * pos.size as f32;
 
-            if pnl < LOSS_RATIO_THRESHOLD * pos.capital_allocated {
+            if pnl < LOSS_RATIO_THRESHOLD * pos.gross_notional {
                 to_close.push(pair.clone());
             }
         }
