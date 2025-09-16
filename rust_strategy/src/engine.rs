@@ -228,27 +228,27 @@ impl<'a> Engine<'a> {
             } else {
                 0.0
             },
-            max_drawdown: self.calc_drawdown(),
+            max_drawdown: calc_drawdown(&self.equity_curve),
             final_value: self.equity,
             max_concurrent_positions: self.max_concurrent_positions,
             trade_log: trades,
         })
     }
+}
 
-    fn calc_drawdown(self: &Self) -> f32 {
-        let mut peak = f32::MIN;
-        let mut max_dd = 0.0;
-        for v in &self.equity_curve {
-            if *v > peak {
-                peak = *v;
-            }
-            let dd = peak - *v;
-            if dd > max_dd {
-                max_dd = dd;
-            }
+fn calc_drawdown(equity_curve: &[f32]) -> f32 {
+    let mut peak = f32::MIN;
+    let mut max_dd = 0.0;
+    for v in equity_curve {
+        if *v > peak {
+            peak = *v;
         }
-        max_dd
+        let dd = peak - *v;
+        if dd > max_dd {
+            max_dd = dd;
+        }
     }
+    max_dd
 }
 
 fn calc_sharpe(equity_curve: &[f32]) -> f32 {
@@ -286,4 +286,113 @@ pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
 
     let mut engine = Engine::new(params);
     engine.run(&df)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::Params;
+
+    fn test_params() -> Params {
+        Params {
+            lookback_zscore: 5,
+            entry_z: 2.0,
+            exit_z: 0.5,
+            expiry_close_days: 5,
+            debug: false,
+            commodity_a_prefix: "A".into(),
+            commodity_b_prefix: "B".into(),
+        }
+    }
+
+    #[test]
+    fn trade_open_and_close_long_position() {
+        let params = test_params();
+        let mut engine = Engine::new(&params);
+        engine.current_price.insert("A1".into(), 50.0);
+        let starting_cash = engine.cash;
+        // Open long (positive qty)
+        let size_after_open = engine.trade("A1", 10).expect("trade should succeed");
+        assert_eq!(size_after_open, 10);
+        assert!(engine.cash < starting_cash - 499.9 && engine.cash > starting_cash - 500.1, "Cash should decrease by price*qty");
+        assert_eq!(engine.open_positions.len(), 1);
+
+        // Close position
+        let size_after_close = engine.trade("A1", -10).expect("close should succeed");
+        assert_eq!(size_after_close, 0);
+        assert!(engine.open_positions.is_empty(), "Position map should remove flat position");
+        assert!((engine.cash - starting_cash).abs() < 1e-4, "Cash should round-trip after round trip trade");
+        assert_eq!(engine.max_concurrent_positions, 1, "Max concurrent should record peak");
+    }
+
+    #[test]
+    fn trade_open_and_close_short_position() {
+        let params = test_params();
+        let mut engine = Engine::new(&params);
+        engine.current_price.insert("A1".into(), 25.0);
+        let starting_cash = engine.cash;
+        // Open short (negative qty first)
+        let size_after_open = engine.trade("A1", -8).expect("short trade ok");
+        assert_eq!(size_after_open, -8);
+        assert!(engine.cash > starting_cash + 199.9 && engine.cash < starting_cash + 200.1, "Cash should increase on short sale");
+        assert_eq!(engine.open_positions.len(), 1);
+        // Cover
+        let size_after_close = engine.trade("A1", 8).expect("cover ok");
+        assert_eq!(size_after_close, 0);
+        assert!(engine.open_positions.is_empty());
+        assert!((engine.cash - starting_cash).abs() < 1e-4, "Cash should return after short round trip");
+        assert_eq!(engine.max_concurrent_positions, 1);
+    }
+
+    #[test]
+    fn trade_tracks_max_concurrent_positions() {
+        let params = test_params();
+        let mut engine = Engine::new(&params);
+        engine.current_price.insert("A1".into(), 10.0);
+        engine.current_price.insert("B1".into(), 20.0);
+        engine.trade("A1", 5).unwrap();
+        engine.trade("B1", 10).unwrap();
+        assert_eq!(engine.open_positions.len(), 2);
+        assert_eq!(engine.max_concurrent_positions, 2);
+        // Close one
+        engine.trade("A1", -5).unwrap();
+        assert_eq!(engine.open_positions.len(), 1);
+        assert_eq!(engine.max_concurrent_positions, 2, "Peak should remain recorded");
+    }
+
+    #[test]
+    fn calc_drawdown_basic() {
+        let eq = vec![100.0, 120.0, 80.0, 90.0, 70.0, 130.0];
+        let dd = calc_drawdown(&eq);
+        // Max drop from prior peak 120 -> 70 = 50.
+        assert!((dd - 50.0).abs() < 1e-6, "Expected drawdown 50, got {}", dd);
+    }
+
+    #[test]
+    fn calc_drawdown_monotonic_up() {
+        let eq = vec![100.0, 110.0, 120.0, 130.0];
+        let dd = calc_drawdown(&eq);
+        assert_eq!(dd, 0.0, "No drawdown in monotonic increase");
+    }
+
+    #[test]
+    fn calc_sharpe_zero_variance() {
+        let eq = vec![100.0, 100.0, 100.0];
+        let s = calc_sharpe(&eq);
+        assert_eq!(s, 0.0, "Sharpe should be zero with zero variance");
+    }
+
+    #[test]
+    fn calc_sharpe_positive_and_negative_returns() {
+        let eq = vec![100.0, 110.0, 100.0]; // returns: 0.1, -0.090909...
+        let s = calc_sharpe(&eq);
+        // Compute expected manually
+        let r1 = 0.1f32;
+        let r2 = -0.0909090909f32;
+        let mean = (r1 + r2) / 2.0;
+        let var = ((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 2.0;
+        let std = var.sqrt();
+        let expected = if std > 0.0 { mean / std } else { 0.0 };
+        assert!((s - expected).abs() < 1e-6, "Sharpe mismatch: got {s}, expected {expected}");
+    }
 }
