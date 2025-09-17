@@ -42,13 +42,7 @@ use crate::{
     TdAccountConfig,
 };
 
-pub struct BaseTraderSpi {
-    pub tdapi: Arc<TraderApi>,
-    pub request_id: i32,
-    pub config: TdAccountConfig,
-}
-
-impl TraderSpi for BaseTraderSpi {
+impl TraderSpi for LiveBroker {
     fn on_front_connected(&mut self) {
         println!("tdspi.on_front_connected !!!");
         let mut req = CThostFtdcReqAuthenticateField::default();
@@ -58,7 +52,7 @@ impl TraderSpi for BaseTraderSpi {
         req.AuthCode.assign_from_str(&self.config.td_auth_code);
 
         self.request_id += 1;
-        self.tdapi.req_authenticate(&mut req, self.request_id);
+        self.api.req_authenticate(&mut req, self.request_id);
     }
 
     fn on_front_disconnected(&mut self, n_reason: i32) {
@@ -89,7 +83,7 @@ impl TraderSpi for BaseTraderSpi {
             req.Password.assign_from_str(&self.config.td_password);
 
             self.request_id += 1;
-            let ret = self.tdapi.req_user_login(&mut req, self.request_id);
+            let ret = self.api.req_user_login(&mut req, self.request_id);
             println!("req_user_login result: {ret}");
         }
     }
@@ -109,9 +103,22 @@ impl TraderSpi for BaseTraderSpi {
 
             self.request_id += 1;
             let ret = self
-                .tdapi
+                .api
                 .req_settlement_info_confirm(&mut req, self.request_id);
             println!("req_user_login result: {ret}");
+        }
+    }
+
+    fn on_rsp_qry_trading_account(
+        &mut self,
+        p_trading_account: Option<&ctp2rs::v1alpha1::CThostFtdcTradingAccountField>,
+        p_rsp_info: Option<&CThostFtdcRspInfoField>,
+        n_request_id: i32,
+        b_is_last: bool,
+    ) {
+        if let Some(p) = p_trading_account {
+            self.cash = p.Available as f32;
+            println!("account cash: {}", self.cash);
         }
     }
 
@@ -128,7 +135,7 @@ impl TraderSpi for BaseTraderSpi {
             self.request_id += 1;
             let mut req = CThostFtdcQryInvestorPositionField::default();
             let ret = self
-                .tdapi
+                .api
                 .req_qry_investor_position(&mut req, self.request_id);
             println!("req_qry_investor_position result: {ret}");
         }
@@ -145,9 +152,12 @@ impl TraderSpi for BaseTraderSpi {
         if let Some(p) = p_investor_position {
             let instrument_id = p.InstrumentID.to_string();
             let user_id = p.InvestorID.to_string();
-            println!("{user_id} holds {instrument_id}");
-        } else {
-            println!("position hold None");
+            println!(
+                "{user_id} holds {instrument_id} with size {}",
+                p.TodayPosition
+            );
+
+            self.positions.insert(instrument_id, p.TodayPosition);
         }
         if b_is_last {
             println!("on_rsp_qry_investor_position finish!");
@@ -167,6 +177,8 @@ struct LiveBroker {
     positions: HashMap<String, i32>, // signed position size (+ long / - short)
     broker_id: String,
     investor_id: String,
+
+    pub config: TdAccountConfig,
 }
 
 impl Broker for LiveBroker {
@@ -294,8 +306,8 @@ impl Broker for LiveBroker {
     }
 }
 
-fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
-    println!("tdapi start here!");
+println!("tdapi start here!");
+fn init_api(config: TdAccountConfig) -> &'static mut LiveBroker {
     println!(
         "td dynlib_path: {}",
         config.td_dynlib_path.to_string_lossy()
@@ -306,7 +318,6 @@ fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
 
     #[cfg(feature = "ctp_v6_7_11")]
     let tdapi = TraderApi::create_api(&config.td_dynlib_path, "./td_", true);
-
     let tdapi = Arc::new(tdapi);
 
     let front_address = config.td_front_address.clone();
@@ -314,24 +325,28 @@ fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
 
     tdapi.register_front(&front_address);
 
-    let td_spi = Box::new(BaseTraderSpi {
-        tdapi: Arc::clone(&tdapi),
+    let broker = Box::new(LiveBroker {
         request_id: 0,
         config,
+        api: tdapi.clone(),
+        cash: 0.0,
+        positions: HashMap::new(),
+        broker_id: "9999".into(),
+        investor_id: "9991".into(),
     });
-    tdapi.register_spi(Box::leak(td_spi));
-
+    let broker_raw = Box::leak(broker);
+    tdapi.register_spi(broker_raw as *mut dyn TraderSpi);
     tdapi.subscribe_private_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
     tdapi.subscribe_public_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
 
     tdapi.init();
 
     println!("tdapi init");
-    tdapi
+    broker_raw
 }
 
 pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
-    let tdapi = init_api(config);
+    let broker = init_api(config);
     let mut strategy = PairStrategy::new_live(
         Params {
             lookback_zscore: 20,
@@ -343,19 +358,8 @@ pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
             commodity_b_prefix: "ag".into(),
             transaction_cost_pct: 0.0001,
         },
-        df);
-    // Capture IDs before config is moved into init_api
-    // We don't retain password/auth code here for safety.
-    let investor_id = "todo_set_user_id".to_string(); // TODO: pass through actual config user id
-    let broker_id = "9999".to_string();
-    let mut broker = LiveBroker {
-        api: tdapi,
-        request_id: 0,
-        cash: 0.0,
-        positions: HashMap::new(),
-        broker_id,
-        investor_id,
-    };
+        df,
+    );
 
     loop {
         println!("td loop");
@@ -367,6 +371,8 @@ pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
         for c in &contracts {
             println!("td sees {} price={} vol={}", c.name, c.price, c.volume);
         }
-        let _ = strategy.trade(0, contracts.clone(), contracts, &mut broker);
+        let b = contracts.clone(); // intra-commodity pairs for now
+        let _ = strategy.trade(0, contracts, b, broker as &mut dyn Broker);
+        strategy.pop_spread();
     }
 }
