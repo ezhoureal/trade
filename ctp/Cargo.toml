@@ -7,7 +7,6 @@ edition = "2021"
 clap = { version = "4.0", features = ["derive", "env"] }
 ctp2rs = { version = "0.1.7", features = ["openctp"] }
 backtest = { path = "../backtest", features = ["live"] }
-once_cell = "1.19"
 polars = { version = "0.49.0", features = ["lazy", "parquet", "strings"] }
 log = "0.4.22"
 dotenv = "0.15.0"

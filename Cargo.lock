@@ -659,7 +659,6 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
- "once_cell",
  "polars",
  "rand 0.8.5",
  "tokio",

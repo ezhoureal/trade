@@ -1,17 +1,14 @@
-#![allow(unused_variables)]
-use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+use std::{collections::HashMap, thread, time::Duration};
+use futures::StreamExt;
+
+use ctp2rs::ffi::AssignFromString;
+use ctp2rs::v1alpha1::*;
+use ctp2rs::v1alpha1::TraderSpiEvent::*;
 
 use backtest::{
     engine::{AccountStatus, Broker},
     params::Params,
     strategy::PairStrategy,
-};
-use ctp2rs::{
-    ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
-    print_rsp_info,
-    v1alpha1::{
-        CThostFtdcInputOrderField, CThostFtdcInvestorPositionField, CThostFtdcQryInvestorPositionField, CThostFtdcReqAuthenticateField, CThostFtdcReqUserLoginField, CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField, CThostFtdcRspUserLoginField, CThostFtdcSettlementInfoConfirmField, THOST_FTDC_CC_Immediately, THOST_FTDC_D_Buy, THOST_FTDC_D_Sell, THOST_FTDC_FCC_NotForceClose, THOST_FTDC_HF_Speculation, THOST_FTDC_OF_Close, THOST_FTDC_OF_Open, THOST_FTDC_OPT_LimitPrice, TraderApi, TraderSpi, TraderSpiInner, TraderSpiStream, THOST_FTDC_TC_GFD, THOST_FTDC_VC_AV, THOST_TE_RESUME_TYPE
-    },
 };
 use polars::prelude::LazyFrame;
 
@@ -27,7 +24,7 @@ use crate::{
 /// can replace the virtual fills below.
 struct LiveBroker {
     api: TraderApi,
-    stream: TraderSpiStream,
+    stream: &'static TraderSpiStream,
     request_id: i32,
     cash: f32,
     positions: HashMap<String, i32>, // signed position size (+ long / - short)
@@ -41,7 +38,7 @@ impl LiveBroker {
     fn sync() -> Result<(), String> {
         // Query current positions from broker and update self.positions accordingly.
         // This is a blocking call; should be called infrequently (e.g. once at start).
-
+        Ok(())
     }
 }
 
@@ -188,8 +185,8 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     tdapi.register_front(&front_address);
 
     let inner = TraderSpiInner::new();
-    let resp_stream = Box::new(TraderSpiStream::new(inner));
-    tdapi.register_spi(Box::leak(resp_stream) as *mut dyn TraderSpi);
+    let resp_stream = Box::leak(Box::new(TraderSpiStream::new(inner)));
+    tdapi.register_spi(resp_stream as *mut dyn TraderSpi);
 
     tdapi.subscribe_private_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
     tdapi.subscribe_public_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
@@ -199,30 +196,29 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     while let Some(spi_msg) = resp_stream.next().await {
         match spi_msg {
             OnFrontConnected(p) => {
-                info!("前端连接成功回报 OnFrontConnected");
-                let mut req = CThostFtdcReqAuthenticateField::default();
-                req.BrokerID.assign_from_str(broker_id);
-                req.UserID.assign_from_str(account);
-                req.AuthCode.assign_from_str(auth_code);
-                req.UserProductInfo.assign_from_str(user_product_info);
-                req.AppID.assign_from_str(app_id);
-                localctp.tdapi.req_authenticate(&mut req, get_request_id());
-                info!("call req_authenticate done");
+                // info!("前端连接成功回报 OnFrontConnected");
+                // let mut req = CThostFtdcReqAuthenticateField::default();
+                // req.BrokerID.assign_from_str(broker_id);
+                // req.UserID.assign_from_str(account);
+                // req.AuthCode.assign_from_str(auth_code);
+                // req.UserProductInfo.assign_from_str(user_product_info);
+                // req.AppID.assign_from_str(app_id);
+                // localctp.tdapi.req_authenticate(&mut req, get_request_id());
+                // info!("call req_authenticate done");
             }
             OnRspAuthenticate(p) => {
-                info!("认证成功回报 OnRspAuthenticate");
-                // 认证后才能登录
-                let mut req = CThostFtdcReqUserLoginField::default();
-                req.BrokerID.assign_from_str(broker_id);
-                req.UserID.assign_from_str(account);
-                req.Password.assign_from_str(&ctp_account.password);
-                // 登录后才能下单
-                localctp.tdapi.req_user_login(&mut req, get_request_id());
-                // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
+                // info!("认证成功回报 OnRspAuthenticate");
+                // // 认证后才能登录
+                // let mut req = CThostFtdcReqUserLoginField::default();
+                // req.BrokerID.assign_from_str(broker_id);
+                // req.UserID.assign_from_str(account);
+                // req.Password.assign_from_str(&ctp_account.password);
+                // // 登录后才能下单
+                // localctp.tdapi.req_user_login(&mut req, get_request_id());
+                // // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
                 break;
             }
             _ => {
-                info!("其它回报");
             }
         }
     }
@@ -239,8 +235,8 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     }
 }
 
-pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
-    let mut broker = init_api(config);
+pub async fn run_td(config: TdAccountConfig, df: LazyFrame) {
+    let mut broker = init_api(config).await;
     let mut strategy = PairStrategy::new_live(
         Params {
             lookback_zscore: 20,
@@ -266,10 +262,8 @@ pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
             println!("td sees {} price={} vol={}", c.name, c.price, c.volume);
         }
         let b = contracts.clone(); // intra-commodity pairs for now
-        broker.update_positions();
+                                   // broker.update_positions();
         let _ = strategy.trade(0, contracts, b, &mut broker);
         strategy.pop_spread();
     }
-
-    broker.conclude_equity();
 }
