@@ -1,11 +1,14 @@
+use backtest::{params::Params, strategy::PairStrategy};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 use std::thread;
 
 mod api_md;
 mod api_td;
+mod market_data;
 use api_md::*;
 use api_td::*;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Environment {
@@ -122,12 +125,23 @@ fn create_config_for_environment(
 
 fn run_two_loops(config: CtpAccountConfig) {
     let config_clone = config.clone();
-    let handle1 = thread::spawn(move || run_td(config)); // 启动第 td 线程
-    let handle2 = thread::spawn(move || run_md(config_clone)); // 启动第 md 线程
-
-    handle1.join().unwrap();
+    let params: Params = Params {
+        lookback_zscore: 20,
+        entry_z: 2.0,
+        exit_z: 0.5,
+        expiry_close_days: 3,
+        debug: true,
+        commodity_a_prefix: "ag".into(),
+        commodity_b_prefix: "ag".into(),
+        transaction_cost_pct: 0.0001,
+    };
+    let strategy = Arc::new(Mutex::new(PairStrategy::new_live(
+        params,
+        "../data/recent.parquet".into(),
+    )));
+    let handle2 = thread::spawn(move || run_md(config_clone, strategy));
+    run_td(config);
     handle2.join().unwrap();
-
     println!("Both loops are finished. Main thread exiting.");
 }
 

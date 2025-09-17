@@ -5,15 +5,11 @@ use ctp2rs::{
     ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
     print_rsp_info,
     v1alpha1::{
-        CThostFtdcInvestorPositionField, CThostFtdcQryInvestorPositionField,
-        CThostFtdcReqAuthenticateField, CThostFtdcReqUserLoginField,
-        CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField, CThostFtdcRspUserLoginField,
-        CThostFtdcSettlementInfoConfirmField, TThostFtdcSystemInfoLenType, TraderApi, TraderSpi,
-        THOST_TE_RESUME_TYPE,
+    CThostFtdcInputOrderField, CThostFtdcInvestorPositionField, CThostFtdcQryInvestorPositionField, CThostFtdcReqAuthenticateField, CThostFtdcReqUserLoginField, CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField, CThostFtdcRspUserLoginField, CThostFtdcSettlementInfoConfirmField, TraderApi, TraderSpi, THOST_TE_RESUME_TYPE
     },
 };
 
-use crate::CtpAccountConfig;
+use crate::{CtpAccountConfig, market_data::{get_last_price, snapshot_contracts}};
 
 pub struct BaseTraderSpi {
     pub tdapi: Arc<TraderApi>,
@@ -143,7 +139,6 @@ pub fn run_td(config: CtpAccountConfig) {
 
     let tdapi = Arc::new(tdapi);
 
-    // 先获取 front_address，避免 move 后的借用问题
     let front_address = config.td_front_address.clone();
 
     let base_tdspi = BaseTraderSpi {
@@ -169,5 +164,23 @@ pub fn run_td(config: CtpAccountConfig) {
     loop {
         println!("td loop");
         thread::sleep(Duration::from_secs(10));
+
+        // Snapshot all current contracts (single lock read) and iterate
+        let contracts = snapshot_contracts();
+        println!("td snapshot has {} contracts", contracts.len());
+        for c in &contracts {
+            println!("td sees {} price={} vol={}", c.name, c.price, c.volume);
+        }
+
+        // Example order using dynamic price if available (fallback to hardcoded)
+        let price = get_last_price("ag2512").unwrap_or(3000.0);
+        let mut action = CThostFtdcInputOrderField {
+            Direction: 0,
+            LimitPrice: price as f64,
+            VolumeTotalOriginal: 1,
+            ..Default::default()
+        };
+        let res = tdapi.req_order_insert(&mut action, 0);
+        println!("req_order_insert res: {} (price {})", res, price);
     }
 }

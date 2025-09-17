@@ -17,5 +17,4 @@ wheels/
 API/
 target/
 **/target/
-rust_strategy/*.json
 .DS_Store

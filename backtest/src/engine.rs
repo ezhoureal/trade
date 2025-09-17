@@ -23,7 +23,7 @@ pub struct BackTestResult {
     pub trade_log: Vec<TradeLogEntry>,
 }
 
-const STARTING_CASH: f32 = 100_000.0;
+const STARTING_CASH: f32 = 1_000_000.0;
 /// Core engine object holding mutable simulation state to avoid long argument lists.
 pub struct Engine<'a> {
     params: &'a Params,
@@ -218,7 +218,7 @@ impl<'a> Engine<'a> {
         println!("Total trading days: {}", trading_days.len());
 
         let contract_expiry_date = build_expiry_date(df)?;
-        let mut strategy = PairStrategy::new(self.params, contract_expiry_date);
+        let mut strategy = PairStrategy::new(self.params.clone(), contract_expiry_date);
         for day in trading_days {
             let (a_today, b_today) = self.prepare_data_today(&df, day)?;
             self.current_price = a_today

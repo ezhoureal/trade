@@ -1,6 +1,7 @@
 #![allow(unused_variables)]
-use std::{sync::Arc, thread, time::Duration};
+use std::{sync::{Arc, Mutex}, thread, time::Duration};
 
+use backtest::strategy::PairStrategy;
 use ctp2rs::{
     ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
     print_rsp_info,
@@ -11,6 +12,7 @@ use ctp2rs::{
 };
 
 use crate::CtpAccountConfig;
+use crate::market_data::update_quote;
 
 pub struct BaseMdSpi {
     pub(crate) mdapi: Arc<MdApi>,
@@ -35,10 +37,10 @@ impl MdSpi for BaseMdSpi {
         print_rsp_info!(rsp_info);
         println!("on_rsp_user_login!");
 
-        if is_last {
-            let instrument_ids = vec!["ag2512".to_string(), "au2512".to_string()];
-            self.mdapi.subscribe_market_data(&instrument_ids);
-        }
+        // if is_last {
+        //     let instrument_ids = vec!["ag2512".to_string(), "au2512".to_string()];
+        //     self.mdapi.subscribe_market_data(&instrument_ids);
+        // }
     }
 
     fn on_rsp_sub_market_data(
@@ -64,21 +66,17 @@ impl MdSpi for BaseMdSpi {
         println!("OnRtnDepthMarketData!");
 
         if let Some(q) = depth_market_data {
-            println!(
-                "[{} {} {}] {} last_price: {}",
-                q.ActionDay.to_string(),
-                q.UpdateTime.to_string(),
-                q.UpdateMillisec,
-                q.InstrumentID.to_string(),
-                q.LastPrice,
-            )
-        } else {
-            panic!("tick null!");
-        };
+            let instrument = q.InstrumentID.to_string();
+            let last_price = q.LastPrice as f32;
+            // For now we don't have volume in this callback struct? If available use q.Volume (example) else 0
+            let volume: u32 = 0; // placeholder until correct field identified
+            update_quote(&instrument, last_price, volume);
+            println!("md update: {} -> {}", instrument.to_ascii_lowercase(), last_price);
+        }
     }
 }
 
-pub fn run_md(config: CtpAccountConfig) {
+pub fn run_md(config: CtpAccountConfig, strategy_ctx: Arc<Mutex<PairStrategy>>) {
     println!("mdapi start here!");
     println!(
         "md dynlib_path: {}",
@@ -96,10 +94,7 @@ pub fn run_md(config: CtpAccountConfig) {
     // 先获取 front_address，避免 move 后的借用问题
     let front_address = config.md_front_address.clone();
 
-    let base_mdspi: BaseMdSpi = BaseMdSpi {
-        mdapi: Arc::clone(&mdapi),
-        config,
-    };
+    let base_mdspi: BaseMdSpi = BaseMdSpi { mdapi: Arc::clone(&mdapi), config };
     let mdspi_box = Box::new(base_mdspi);
     println!("md get_api_version: {}", mdapi.get_api_version());
 
@@ -111,6 +106,8 @@ pub fn run_md(config: CtpAccountConfig) {
     mdapi.register_spi(mdspi_ptr);
 
     mdapi.init();
+    let instruments = vec!["ag2512".to_string(), "au2601".to_string()];
+    mdapi.subscribe_market_data(&instruments);
 
     println!("mdapi init");
 

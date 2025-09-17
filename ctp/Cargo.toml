@@ -6,3 +6,11 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.0", features = ["derive", "env"] }
 ctp2rs = { version = "0.1.7", features = ["openctp"] }
+backtest = { path = "../backtest" }
+polars = { version = "0.49.0", features = ["lazy", "parquet", "strings"] }
+once_cell = "1.19"
+
+[features]
+# Provide empty feature to silence cfg checks used in code.
+ctp_v6_7_11 = []
+history_seed = []

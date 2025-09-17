@@ -651,8 +651,11 @@ dependencies = [
 name = "ctp"
 version = "0.1.0"
 dependencies = [
+ "backtest",
  "clap",
  "ctp2rs",
+ "once_cell",
+ "polars",
 ]
 
 [[package]]

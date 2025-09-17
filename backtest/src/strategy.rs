@@ -1,4 +1,5 @@
 use anyhow::Result;
+use polars::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 
@@ -31,8 +32,8 @@ pub struct PairPosition {
     size: u32,
 }
 
-pub struct PairStrategy<'a> {
-    params: &'a Params,
+pub struct PairStrategy {
+    params: Params,
     trade_log: Vec<TradeLogEntry>,
     spread_histories: HashMap<(String, String), VecDeque<f32>>,
     active_positions: HashMap<(String, String), PairPosition>,
@@ -40,8 +41,8 @@ pub struct PairStrategy<'a> {
     bar_count: u32,
 }
 
-impl<'a> PairStrategy<'a> {
-    pub fn new(params: &'a Params, contract_expiry: HashMap<String, u32>) -> Self {
+impl PairStrategy {
+    pub fn new(params: Params, contract_expiry: HashMap<String, u32>) -> Self {
         PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -50,6 +51,21 @@ impl<'a> PairStrategy<'a> {
             bar_count: 0,
             trade_log: Vec::new(),
         }
+    }
+
+    pub fn new_live(params: Params, data_path: &str) -> Self {
+        let mut strategy = PairStrategy {
+            params,
+            spread_histories: HashMap::new(),
+            active_positions: HashMap::new(),
+            contract_expiry: HashMap::new(),
+            bar_count: 0,
+            trade_log: Vec::new(),
+        };
+        strategy
+            .load_spread_history(data_path)
+            .expect("Failed to load spread history");
+        strategy
     }
 
     pub fn trade(
@@ -165,12 +181,107 @@ impl<'a> PairStrategy<'a> {
         let lookback = self.params.lookback_zscore;
         let entry = self
             .spread_histories
-            .entry(pair.clone())
+            .entry(pair)
             .or_insert_with(|| VecDeque::with_capacity(lookback));
         if entry.len() == lookback {
             entry.pop_front();
         }
         entry.push_back(spread);
+    }
+
+    pub fn pop_spread(&mut self) {
+        for (_, history) in self.spread_histories.iter_mut() {
+            history.pop_back();
+        }
+    }
+
+    fn load_spread_history<P: AsRef<std::path::Path>>(
+        &mut self,
+        path: P,
+    ) -> PolarsResult<()> {
+        let df = LazyFrame::scan_parquet(
+            path.as_ref().to_string_lossy().as_ref(),
+            ScanArgsParquet::default(),
+        )?;
+        let sort_opts = SortMultipleOptions {
+            descending: vec![false],
+            maintain_order: false,
+            nulls_last: vec![false],
+            multithreaded: true,
+            limit: None,
+        };
+        let sorted = df.sort_by_exprs(vec![col("Date")], sort_opts).collect()?;
+        let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
+        let prefix_a = &self.params.commodity_a_prefix;
+        let prefix_b = &self.params.commodity_b_prefix;
+        let contracts_s = sorted.column("Contract")?.str()?;
+        let price_col = if sorted.get_column_index("Price").is_some() {
+            "Price"
+        } else {
+            "Close"
+        }; // fallback
+        let prices_f = sorted.column(price_col)?.f64()?;
+        let date_col = sorted.column("Date")?;
+        let prefix_a_l = prefix_a.to_lowercase();
+        let prefix_b_l = prefix_b.to_lowercase();
+        let mut last_date: Option<AnyValue> = None;
+        let mut a_contracts: Vec<(String, f32)> = Vec::new();
+        let mut b_contracts: Vec<(String, f32)> = Vec::new();
+        for row in 0..sorted.height() {
+            let cur_date = date_col.get(row)?;
+            if let Some(ref ld) = last_date {
+                if &cur_date != ld {
+                    self.flush_day(&a_contracts, &b_contracts, same_prefix);
+                    a_contracts.clear();
+                    b_contracts.clear();
+                }
+            }
+            last_date = Some(cur_date);
+            if let Some(contract) = contracts_s.get(row) {
+                if let Some(price_v) = prices_f.get(row) {
+                    let price = price_v as f32;
+                    let c_l = contract.to_lowercase();
+                    if same_prefix {
+                        if c_l.starts_with(&prefix_a_l) {
+                            a_contracts.push((contract.to_string(), price));
+                        }
+                    } else {
+                        if c_l.starts_with(&prefix_a_l) {
+                            a_contracts.push((contract.to_string(), price));
+                        } else if c_l.starts_with(&prefix_b_l) {
+                            b_contracts.push((contract.to_string(), price));
+                        }
+                    }
+                }
+            }
+        }
+        self.flush_day(&a_contracts, &b_contracts, same_prefix);
+        Ok(())
+    }
+
+    fn flush_day(
+        &mut self,
+        a_contracts: &Vec<(String, f32)>,
+        b_contracts: &Vec<(String, f32)>,
+        same_prefix: bool,
+    ) {
+        if same_prefix {
+            for i in 0..a_contracts.len() {
+                for j in (i + 1)..a_contracts.len() {
+                    let (ref name_i, price_i) = a_contracts[i];
+                    let (ref name_j, price_j) = a_contracts[j];
+                    let spread = price_i - price_j;
+                    self.push_spread((name_i.clone(), name_j.clone()), spread);
+                }
+            }
+        } else {
+            for (name_a, price_a) in a_contracts.iter() {
+                for (name_b, price_b) in b_contracts.iter() {
+                    let spread = *price_a - *price_b;
+                    self.push_spread((name_a.clone(), name_b.clone()), spread);
+                }
+            }
+        }
     }
 
     fn close_reverted(&mut self, broker: &mut dyn Broker) -> Option<()> {
@@ -352,7 +463,10 @@ impl<'a> PairStrategy<'a> {
 
 #[cfg(test)]
 mod tests {
+    use polars::prelude::*;
     use std::collections::{HashMap, HashSet};
+    use std::fs;
+    use std::path::PathBuf;
 
     use crate::engine::{AccountStatus, ContractData};
 
@@ -409,6 +523,71 @@ mod tests {
         }
     }
 
+    fn write_temp_parquet(df: &DataFrame, name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        // Use timestamp-based name to avoid collisions in tests.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        path.push(format!("{}_{}.parquet", name, ts));
+        let file = std::fs::File::create(&path).expect("create temp parquet");
+        let writer = ParquetWriter::new(file);
+        let mut df_clone = df.clone();
+        writer.finish(&mut df_clone).expect("write parquet");
+        path
+    }
+
+    #[test]
+    fn load_history_same_prefix_intra_pairs() {
+        // Both prefixes identical -> intra commodity pairing
+        let mut params = base_params();
+        params.commodity_a_prefix = "AG".into();
+        params.commodity_b_prefix = "AG".into();
+        // Build simple 2 days, 3 contracts per day -> expect 3 unique pair spreads per day (C(3,2)=3)
+        let df = df!(
+            "Date" => &["2025-08-06", "2025-08-06", "2025-08-06", "2025-08-07", "2025-08-07", "2025-08-07"],
+            "Contract" => &["ag2510", "ag2511", "ag2512", "ag2510", "ag2511", "ag2512"],
+            "Price" => &[9182.0_f64, 9191.0, 9205.0, 9185.0, 9190.0, 9210.0]
+        ).unwrap();
+        let path = write_temp_parquet(&df, "intra");
+        let strat_params = params.clone();
+        let mut strat = PairStrategy::new(strat_params, HashMap::new());
+        strat
+            .load_spread_history(&path)
+            .expect("load history");
+        // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
+        assert_eq!(strat.spread_histories.len(), 3, "should have 3 intra pairs");
+        for hist in strat.spread_histories.values() {
+            assert_eq!(hist.len(), 2, "two days of spreads");
+        }
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn load_history_cross_prefix_pairs() {
+        let mut params = base_params();
+        params.commodity_a_prefix = "AG".into();
+        params.commodity_b_prefix = "CU".into();
+        // 2 days, 2 AG contracts, 2 CU contracts each day -> 4 spreads per day (2x2)
+        let df = df!(
+            "Date" => &["2025-08-06","2025-08-06","2025-08-06","2025-08-06","2025-08-07","2025-08-07","2025-08-07","2025-08-07"],
+            "Contract" => &["ag2510","ag2511","cu2510","cu2511","ag2510","ag2511","cu2510","cu2511"],
+            "Price" => &[10.0_f64,11.0,20.0,21.0,11.0,12.0,19.0,22.0]
+        ).unwrap();
+        let path = write_temp_parquet(&df, "cross");
+        let mut strat = PairStrategy::new(params.clone(), HashMap::new());
+        strat
+            .load_spread_history(&path)
+            .expect("load history");
+        // Expect 4 unique AGxCU pairs
+        assert_eq!(strat.spread_histories.len(), 4, "should have 4 cross pairs");
+        for hist in strat.spread_histories.values() {
+            assert_eq!(hist.len(), 2, "two days of spreads");
+        }
+        fs::remove_file(path).ok();
+    }
+
     fn mk_contract(name: &str, price: f32, volume: u32) -> ContractData {
         ContractData {
             name: name.to_string(),
@@ -439,7 +618,7 @@ mod tests {
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
-        let mut strat = PairStrategy::new(&params, expiry);
+        let mut strat = PairStrategy::new(params, expiry);
         let mut broker = TestBroker::new();
 
         // Build 5-bar history where final spread is an outlier negative enough to cross entry_z.
@@ -480,7 +659,7 @@ mod tests {
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
-        let mut strat = PairStrategy::new(&params, expiry);
+        let mut strat = PairStrategy::new(params, expiry);
         let mut broker = TestBroker::new();
 
         // Enter (same sequence as previous test)
@@ -523,7 +702,7 @@ mod tests {
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
-        let mut strat = PairStrategy::new(&params, expiry);
+        let mut strat = PairStrategy::new(params, expiry);
         let mut broker = TestBroker::new();
 
         // Build spreads with last large positive outlier -> Short entry
@@ -568,7 +747,7 @@ mod tests {
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 10);
         expiry.insert("B1".into(), 10);
-        let mut strat = PairStrategy::new(&params, expiry);
+        let mut strat = PairStrategy::new(params, expiry);
         let mut broker = TestBroker::new();
 
         // Enter a position early (same negative outlier pattern)
@@ -602,7 +781,7 @@ mod tests {
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
-        let mut strat = PairStrategy::new(&params, expiry);
+        let mut strat = PairStrategy::new(params.clone(), expiry);
         let mut broker = TestBroker::new();
 
         // Build history to trigger long entry on negative outlier spread.
