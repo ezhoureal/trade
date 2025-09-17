@@ -4,9 +4,9 @@ use std::thread;
 
 mod data_monitor;
 mod market_data;
-mod trade;
+mod live_trade;
 use data_monitor::*;
-use trade::*;
+use live_trade::*;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Environment {
