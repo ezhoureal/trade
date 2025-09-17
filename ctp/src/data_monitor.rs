@@ -1,4 +1,4 @@
-use std::{sync::Arc, thread, time::Duration};
+use std::sync::Arc;
 
 use ctp2rs::{
     ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
@@ -27,18 +27,18 @@ impl MdSpi for BaseMdSpi {
 
     fn on_rsp_user_login(
         &mut self,
-        rsp_user_login: Option<&CThostFtdcRspUserLoginField>,
+        _rsp_user_login: Option<&CThostFtdcRspUserLoginField>,
         rsp_info: Option<&CThostFtdcRspInfoField>,
-        request_id: i32,
+        _request_id: i32,
         is_last: bool,
     ) {
         print_rsp_info!(rsp_info);
         println!("on_rsp_user_login!");
 
-        // if is_last {
-        //     let instrument_ids = vec!["ag2512".to_string(), "au2512".to_string()];
-        //     self.mdapi.subscribe_market_data(&instrument_ids);
-        // }
+        if is_last {
+            let instrument_ids = vec!["ag2512".to_string(), "au2512".to_string()];
+            self.md_api.subscribe_market_data(&instrument_ids);
+        }
     }
 
     fn on_rsp_sub_market_data(
@@ -79,7 +79,6 @@ impl MdSpi for BaseMdSpi {
 }
 
 pub fn run_md(config: MdAccountConfig) {
-    println!("mdapi start here!");
     println!(
         "md dynlib_path: {}",
         config.md_dynlib_path.to_string_lossy()
@@ -93,30 +92,24 @@ pub fn run_md(config: MdAccountConfig) {
 
     let md_api = Arc::new(mdapi);
 
-    // 先获取 front_address，避免 move 后的借用问题
     let front_address = config.md_front_address.clone();
 
-    let base_mdspi: BaseMdSpi = BaseMdSpi {
-        md_api: Arc::clone(&md_api),
-        config,
-    };
-    let mdspi_box = Box::new(base_mdspi);
+    // Create the MdSpi instance and intentionally leak it so it lives for the entire
+    // process. This is the simplest way to satisfy the C API expectation of a stable
+    // pointer without adding extra indirection. Acceptable for a singleton.
+
     println!("md get_api_version: {}", md_api.get_api_version());
 
     md_api.register_front(&front_address);
 
-    let mdspi_ptr = Box::into_raw(mdspi_box) as *mut dyn MdSpi;
-
-    md_api.register_spi(mdspi_ptr);
+    // Leak the Box; the pointer now has 'static lifetime (never freed until process exit).
+    let md_spi_box = Box::new(BaseMdSpi {
+        md_api: Arc::clone(&md_api),
+        config,
+    });
+    let spi: *mut BaseMdSpi = Box::leak(md_spi_box);
+    md_api.register_spi(spi as *mut dyn MdSpi);
 
     md_api.init();
-    let instruments = vec!["ag2512".to_string(), "au2601".to_string()];
-    md_api.subscribe_market_data(&instruments);
-
     println!("mdapi init");
-
-    loop {
-        println!("md loop");
-        thread::sleep(Duration::from_secs(10));
-    }
 }

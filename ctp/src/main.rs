@@ -1,6 +1,5 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
-use std::thread;
 
 mod data_monitor;
 mod market_data;
@@ -133,9 +132,7 @@ fn main() {
 
     let config = create_config_for_environment(args.environment, args.user_id, args.password);
 
-    let data_monitor = thread::spawn(move || run_md(config.0));
-    run_td(config.1); // main thread runs TD
-
-    data_monitor.join().unwrap();
+    run_md(config.0);
+    run_td(config.1);
     println!("Both loops are finished. Main thread exiting.");
 }
