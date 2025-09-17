@@ -510,21 +510,6 @@ mod tests {
         }
     }
 
-    fn write_temp_parquet(df: &DataFrame, name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        // Use timestamp-based name to avoid collisions in tests.
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        path.push(format!("{}_{}.parquet", name, ts));
-        let file = std::fs::File::create(&path).expect("create temp parquet");
-        let writer = ParquetWriter::new(file);
-        let mut df_clone = df.clone();
-        writer.finish(&mut df_clone).expect("write parquet");
-        path
-    }
-
     #[test]
     fn load_history_same_prefix_intra_pairs() {
         // Both prefixes identical -> intra commodity pairing
@@ -537,10 +522,9 @@ mod tests {
             "Contract" => &["ag2510", "ag2511", "ag2512", "ag2510", "ag2511", "ag2512"],
             "Price" => &[9182.0_f64, 9191.0, 9205.0, 9185.0, 9190.0, 9210.0]
         ).unwrap();
-        let path = write_temp_parquet(&df, "intra");
         let strat_params = params.clone();
         let mut strategy = PairStrategy::new(strat_params, HashMap::new());
-        strategy.load_spread_history(&path).expect("load history");
+        strategy.load_spread_history(df.lazy()).expect("load history");
         // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
         assert_eq!(
             strategy.spread_histories.len(),
@@ -550,7 +534,6 @@ mod tests {
         for hist in strategy.spread_histories.values() {
             assert_eq!(hist.len(), 2, "two days of spreads");
         }
-        fs::remove_file(path).ok();
     }
 
     #[test]
@@ -564,15 +547,13 @@ mod tests {
             "Contract" => &["ag2510","ag2511","cu2510","cu2511","ag2510","ag2511","cu2510","cu2511"],
             "Price" => &[10.0_f64,11.0,20.0,21.0,11.0,12.0,19.0,22.0]
         ).unwrap();
-        let path = write_temp_parquet(&df, "cross");
         let mut strat = PairStrategy::new(params.clone(), HashMap::new());
-        strat.load_spread_history(&path).expect("load history");
+        strat.load_spread_history(df.lazy()).expect("load history");
         // Expect 4 unique AGxCU pairs
         assert_eq!(strat.spread_histories.len(), 4, "should have 4 cross pairs");
         for hist in strat.spread_histories.values() {
             assert_eq!(hist.len(), 2, "two days of spreads");
         }
-        fs::remove_file(path).ok();
     }
 
     fn mk_contract(name: &str, price: f32, volume: u32) -> ContractData {
