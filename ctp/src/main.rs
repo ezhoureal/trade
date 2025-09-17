@@ -1,9 +1,10 @@
 use clap::{Parser, ValueEnum};
+use polars::prelude::*;
 use std::path::PathBuf;
 
 mod data_monitor;
-mod market_data;
 mod live_trade;
+mod market_data;
 use data_monitor::*;
 use live_trade::*;
 
@@ -78,19 +79,21 @@ fn create_config_for_environment(
             #[cfg(target_os = "windows")]
             let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
-            (MdAccountConfig {
-                md_user_id: user_id.clone(),
-                md_front_address: "tcp://182.254.243.31:30011".to_string(), // SimNow 仿真环境
-                md_dynlib_path,
-            },
-            TdAccountConfig {
-                td_user_id: user_id,
-                td_password: password,
-                td_app_id: "simnow_client_test".to_string(),
-                td_auth_code: "0000000000000000".to_string(),
-                td_front_address: "tcp://121.37.90.193:20002".to_string(), // OPENCTP 仿真环境
-                td_dynlib_path,
-            })
+            (
+                MdAccountConfig {
+                    md_user_id: user_id.clone(),
+                    md_front_address: "tcp://182.254.243.31:30011".to_string(), // SimNow 仿真环境
+                    md_dynlib_path,
+                },
+                TdAccountConfig {
+                    td_user_id: user_id,
+                    td_password: password,
+                    td_app_id: "simnow_client_test".to_string(),
+                    td_auth_code: "0000000000000000".to_string(),
+                    td_front_address: "tcp://121.37.90.193:20002".to_string(), // OPENCTP 仿真环境
+                    td_dynlib_path,
+                },
+            )
         }
         Environment::Tts => {
             // 7x24小时模拟环境配置
@@ -108,31 +111,49 @@ fn create_config_for_environment(
             #[cfg(target_os = "windows")]
             let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
-            (MdAccountConfig {
-                md_user_id: user_id.clone(),
-                md_front_address: "tcp://121.37.80.177:20004".to_string(), // TTS 7x24 环境
-                md_dynlib_path,
-            },
-            TdAccountConfig {
-                td_user_id: user_id,
-                td_password: password,
-                td_app_id: "simnow_client_test".to_string(),
-                td_auth_code: "0000000000000000".to_string(),
-                td_front_address: "tcp://121.37.80.177:20002".to_string(), // TTS 7x24 环境
-                td_dynlib_path,
-            })
+            (
+                MdAccountConfig {
+                    md_user_id: user_id.clone(),
+                    md_front_address: "tcp://121.37.80.177:20004".to_string(), // TTS 7x24 环境
+                    md_dynlib_path,
+                },
+                TdAccountConfig {
+                    td_user_id: user_id,
+                    td_password: password,
+                    td_app_id: "simnow_client_test".to_string(),
+                    td_auth_code: "0000000000000000".to_string(),
+                    td_front_address: "tcp://121.37.80.177:20002".to_string(), // TTS 7x24 环境
+                    td_dynlib_path,
+                },
+            )
         }
     }
 }
 
-fn main() {
+fn main() -> PolarsResult<()> {
     let args = Args::parse();
 
     println!("Running with environment: {:?}", args.environment);
 
     let config = create_config_for_environment(args.environment, args.user_id, args.password);
 
-    run_md(config.0);
-    run_td(config.1);
+    let df = LazyFrame::scan_parquet("../data/recent.parquet", ScanArgsParquet::default())?;
+    let contracts_df = df
+        .clone()
+        .unique(
+            Some(vec!["Contract".to_string()]),
+            UniqueKeepStrategy::First,
+        )
+        .collect()?;
+    let contracts: Vec<String> = contracts_df
+        .column("Contract")?
+        .str()?
+        .into_iter()
+        .filter_map(|opt| opt.map(|s| s.to_string()))
+        .collect();
+
+    run_md(config.0, contracts);
+    run_td(config.1, df);
     println!("Both loops are finished. Main thread exiting.");
+    Ok(())
 }

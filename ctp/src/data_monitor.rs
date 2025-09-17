@@ -15,6 +15,7 @@ use crate::MdAccountConfig;
 pub struct BaseMdSpi {
     pub(crate) md_api: Arc<MdApi>,
     pub(crate) config: MdAccountConfig,
+    contracts: Vec<String>,
 }
 
 impl MdSpi for BaseMdSpi {
@@ -33,11 +34,13 @@ impl MdSpi for BaseMdSpi {
         is_last: bool,
     ) {
         print_rsp_info!(rsp_info);
-        println!("on_rsp_user_login!");
+        println!(
+            "on_rsp_user_login! subscribing to contracts {:?}",
+            self.contracts
+        );
 
         if is_last {
-            let instrument_ids = vec!["ag2512".to_string(), "au2512".to_string()];
-            self.md_api.subscribe_market_data(&instrument_ids);
+            self.md_api.subscribe_market_data(&self.contracts);
         }
     }
 
@@ -78,7 +81,7 @@ impl MdSpi for BaseMdSpi {
     }
 }
 
-pub fn run_md(config: MdAccountConfig) {
+pub fn run_md(config: MdAccountConfig, contracts: Vec<String>) {
     println!(
         "md dynlib_path: {}",
         config.md_dynlib_path.to_string_lossy()
@@ -91,14 +94,9 @@ pub fn run_md(config: MdAccountConfig) {
     let mdapi = MdApi::create_api(&config.md_dynlib_path, "./md_", false, false, true);
 
     let md_api = Arc::new(mdapi);
+    println!("md get_api_version: {}", md_api.get_api_version());
 
     let front_address = config.md_front_address.clone();
-
-    // Create the MdSpi instance and intentionally leak it so it lives for the entire
-    // process. This is the simplest way to satisfy the C API expectation of a stable
-    // pointer without adding extra indirection. Acceptable for a singleton.
-
-    println!("md get_api_version: {}", md_api.get_api_version());
 
     md_api.register_front(&front_address);
 
@@ -106,6 +104,7 @@ pub fn run_md(config: MdAccountConfig) {
     let md_spi_box = Box::new(BaseMdSpi {
         md_api: Arc::clone(&md_api),
         config,
+        contracts,
     });
     let spi: *mut BaseMdSpi = Box::leak(md_spi_box);
     md_api.register_spi(spi as *mut dyn MdSpi);

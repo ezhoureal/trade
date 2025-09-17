@@ -54,7 +54,7 @@ impl PairStrategy {
     }
 
     #[cfg(feature="live")]
-    pub fn new_live(params: Params, data_path: &str) -> Self {
+    pub fn new_live(params: Params, df: LazyFrame) -> Self {
         let mut strategy = PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -64,7 +64,7 @@ impl PairStrategy {
             trade_log: Vec::new(),
         };
         strategy
-            .load_spread_history(data_path)
+            .load_spread_history(df)
             .expect("Failed to load spread history");
         strategy
     }
@@ -198,11 +198,7 @@ impl PairStrategy {
     }
 
     #[cfg(feature="live")]
-    fn load_spread_history<P: AsRef<std::path::Path>>(&mut self, path: P) -> PolarsResult<()> {
-        let df = LazyFrame::scan_parquet(
-            path.as_ref().to_string_lossy().as_ref(),
-            ScanArgsParquet::default(),
-        )?;
+    fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
         let sort_opts = SortMultipleOptions {
             descending: vec![false],
             maintain_order: false,
@@ -212,13 +208,9 @@ impl PairStrategy {
         };
         let sorted = df.sort_by_exprs(vec![col("Date")], sort_opts).collect()?;
         let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
-        let prefix_a = &self.params.commodity_a_prefix;
-        let prefix_b = &self.params.commodity_b_prefix;
         let contracts_s = sorted.column("Contract")?.str()?;
         let prices_f = sorted.column("Price")?.f64()?;
         let date_col = sorted.column("Date")?;
-        let prefix_a_l = prefix_a.to_lowercase();
-        let prefix_b_l = prefix_b.to_lowercase();
         let mut last_date: Option<AnyValue> = None;
         let mut a_contracts: Vec<(String, f32)> = Vec::new();
         let mut b_contracts: Vec<(String, f32)> = Vec::new();
@@ -237,13 +229,13 @@ impl PairStrategy {
                     let price = price_v as f32;
                     let c_l = contract.to_lowercase();
                     if same_prefix {
-                        if c_l.starts_with(&prefix_a_l) {
+                        if c_l.starts_with(&self.params.commodity_a_prefix) {
                             a_contracts.push((contract.to_string(), price));
                         }
                     } else {
-                        if c_l.starts_with(&prefix_a_l) {
+                        if c_l.starts_with(&self.params.commodity_a_prefix) {
                             a_contracts.push((contract.to_string(), price));
-                        } else if c_l.starts_with(&prefix_b_l) {
+                        } else if c_l.starts_with(&self.params.commodity_b_prefix) {
                             b_contracts.push((contract.to_string(), price));
                         }
                     }
@@ -537,8 +529,8 @@ mod tests {
     fn load_history_same_prefix_intra_pairs() {
         // Both prefixes identical -> intra commodity pairing
         let mut params = base_params();
-        params.commodity_a_prefix = "AG".into();
-        params.commodity_b_prefix = "AG".into();
+        params.commodity_a_prefix = "ag".into();
+        params.commodity_b_prefix = "ag".into();
         // Build simple 2 days, 3 contracts per day -> expect 3 unique pair spreads per day (C(3,2)=3)
         let df = df!(
             "Date" => &["2025-08-06", "2025-08-06", "2025-08-06", "2025-08-07", "2025-08-07", "2025-08-07"],
@@ -564,8 +556,8 @@ mod tests {
     #[test]
     fn load_history_cross_prefix_pairs() {
         let mut params = base_params();
-        params.commodity_a_prefix = "AG".into();
-        params.commodity_b_prefix = "CU".into();
+        params.commodity_a_prefix = "ag".into();
+        params.commodity_b_prefix = "cu".into();
         // 2 days, 2 AG contracts, 2 CU contracts each day -> 4 spreads per day (2x2)
         let df = df!(
             "Date" => &["2025-08-06","2025-08-06","2025-08-06","2025-08-06","2025-08-07","2025-08-07","2025-08-07","2025-08-07"],

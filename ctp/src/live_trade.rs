@@ -35,6 +35,7 @@ use ctp2rs::{
         THOST_TE_RESUME_TYPE,
     },
 };
+use polars::prelude::LazyFrame;
 
 use crate::{
     market_data::{get_last_price, snapshot_contracts},
@@ -329,7 +330,7 @@ fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
     tdapi
 }
 
-pub fn run_td(config: TdAccountConfig) {
+pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
     let tdapi = init_api(config);
     let mut strategy = PairStrategy::new_live(
         Params {
@@ -342,9 +343,7 @@ pub fn run_td(config: TdAccountConfig) {
             commodity_b_prefix: "ag".into(),
             transaction_cost_pct: 0.0001,
         },
-        "../data/recent.parquet".into(),
-    );
-    const STARTING_CASH: f32 = 1_000_000.0;
+        df);
     // Capture IDs before config is moved into init_api
     // We don't retain password/auth code here for safety.
     let investor_id = "todo_set_user_id".to_string(); // TODO: pass through actual config user id
@@ -352,7 +351,7 @@ pub fn run_td(config: TdAccountConfig) {
     let mut broker = LiveBroker {
         api: tdapi,
         request_id: 0,
-        cash: STARTING_CASH,
+        cash: 0.0,
         positions: HashMap::new(),
         broker_id,
         investor_id,

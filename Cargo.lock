@@ -655,6 +655,7 @@ dependencies = [
  "clap",
  "ctp2rs",
  "once_cell",
+ "polars",
 ]
 
 [[package]]
