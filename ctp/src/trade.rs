@@ -1,20 +1,28 @@
 #![allow(unused_variables)]
 use std::{sync::Arc, thread, time::Duration};
 
+use backtest::{params::Params, strategy::PairStrategy};
 use ctp2rs::{
     ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
     print_rsp_info,
     v1alpha1::{
-    CThostFtdcInputOrderField, CThostFtdcInvestorPositionField, CThostFtdcQryInvestorPositionField, CThostFtdcReqAuthenticateField, CThostFtdcReqUserLoginField, CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField, CThostFtdcRspUserLoginField, CThostFtdcSettlementInfoConfirmField, TraderApi, TraderSpi, THOST_TE_RESUME_TYPE
+        CThostFtdcInputOrderField, CThostFtdcInvestorPositionField,
+        CThostFtdcQryInvestorPositionField, CThostFtdcReqAuthenticateField,
+        CThostFtdcReqUserLoginField, CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField,
+        CThostFtdcRspUserLoginField, CThostFtdcSettlementInfoConfirmField, TraderApi, TraderSpi,
+        THOST_TE_RESUME_TYPE,
     },
 };
 
-use crate::{CtpAccountConfig, market_data::{get_last_price, snapshot_contracts}};
+use crate::{
+    market_data::{get_last_price, snapshot_contracts},
+    TdAccountConfig,
+};
 
 pub struct BaseTraderSpi {
     pub tdapi: Arc<TraderApi>,
     pub request_id: i32,
-    pub config: CtpAccountConfig,
+    pub config: TdAccountConfig,
 }
 
 impl TraderSpi for BaseTraderSpi {
@@ -124,7 +132,7 @@ impl TraderSpi for BaseTraderSpi {
     }
 }
 
-pub fn run_td(config: CtpAccountConfig) {
+fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
     println!("tdapi start here!");
     println!(
         "td dynlib_path: {}",
@@ -160,6 +168,24 @@ pub fn run_td(config: CtpAccountConfig) {
     tdapi.init();
 
     println!("tdapi init");
+    tdapi
+}
+
+pub fn run_td(config: TdAccountConfig) {
+    let tdapi = init_api(config);
+    let strategy = PairStrategy::new_live(
+        Params {
+            lookback_zscore: 20,
+            entry_z: 2.0,
+            exit_z: 0.5,
+            expiry_close_days: 3,
+            debug: true,
+            commodity_a_prefix: "ag".into(),
+            commodity_b_prefix: "ag".into(),
+            transaction_cost_pct: 0.0001,
+        },
+        "../data/recent.parquet".into(),
+    );
 
     loop {
         println!("td loop");

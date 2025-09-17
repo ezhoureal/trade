@@ -1,14 +1,12 @@
-use backtest::{params::Params, strategy::PairStrategy};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 use std::thread;
 
-mod api_md;
-mod api_td;
+mod data_monitor;
 mod market_data;
-use api_md::*;
-use api_td::*;
-use std::sync::{Arc, Mutex};
+mod trade;
+use data_monitor::*;
+use trade::*;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Environment {
@@ -19,12 +17,13 @@ pub enum Environment {
 }
 
 #[derive(Debug, Clone)]
-pub struct CtpAccountConfig {
+pub struct MdAccountConfig {
     // mdapi 配置
     pub md_user_id: String,
     pub md_front_address: String,
     pub md_dynlib_path: PathBuf,
-
+}
+pub struct TdAccountConfig {
     // tdapi 配置
     pub td_user_id: String,
     pub td_password: String,
@@ -54,7 +53,7 @@ fn create_config_for_environment(
     env: Environment,
     user_id: String,
     password: String,
-) -> CtpAccountConfig {
+) -> (MdAccountConfig, TdAccountConfig) {
     let base_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let base_path = std::path::Path::new(&base_dir);
 
@@ -80,17 +79,19 @@ fn create_config_for_environment(
             #[cfg(target_os = "windows")]
             let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
-            CtpAccountConfig {
+            (MdAccountConfig {
                 md_user_id: user_id.clone(),
                 md_front_address: "tcp://182.254.243.31:30011".to_string(), // SimNow 仿真环境
                 md_dynlib_path,
+            },
+            TdAccountConfig {
                 td_user_id: user_id,
                 td_password: password,
                 td_app_id: "simnow_client_test".to_string(),
                 td_auth_code: "0000000000000000".to_string(),
                 td_front_address: "tcp://121.37.90.193:20002".to_string(), // OPENCTP 仿真环境
                 td_dynlib_path,
-            }
+            })
         }
         Environment::Tts => {
             // 7x24小时模拟环境配置
@@ -108,41 +109,21 @@ fn create_config_for_environment(
             #[cfg(target_os = "windows")]
             let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
-            CtpAccountConfig {
+            (MdAccountConfig {
                 md_user_id: user_id.clone(),
                 md_front_address: "tcp://121.37.80.177:20004".to_string(), // TTS 7x24 环境
                 md_dynlib_path,
+            },
+            TdAccountConfig {
                 td_user_id: user_id,
                 td_password: password,
                 td_app_id: "simnow_client_test".to_string(),
                 td_auth_code: "0000000000000000".to_string(),
                 td_front_address: "tcp://121.37.80.177:20002".to_string(), // TTS 7x24 环境
                 td_dynlib_path,
-            }
+            })
         }
     }
-}
-
-fn run_two_loops(config: CtpAccountConfig) {
-    let config_clone = config.clone();
-    let params: Params = Params {
-        lookback_zscore: 20,
-        entry_z: 2.0,
-        exit_z: 0.5,
-        expiry_close_days: 3,
-        debug: true,
-        commodity_a_prefix: "ag".into(),
-        commodity_b_prefix: "ag".into(),
-        transaction_cost_pct: 0.0001,
-    };
-    let strategy = Arc::new(Mutex::new(PairStrategy::new_live(
-        params,
-        "../data/recent.parquet".into(),
-    )));
-    let handle2 = thread::spawn(move || run_md(config_clone, strategy));
-    run_td(config);
-    handle2.join().unwrap();
-    println!("Both loops are finished. Main thread exiting.");
 }
 
 fn main() {
@@ -152,5 +133,9 @@ fn main() {
 
     let config = create_config_for_environment(args.environment, args.user_id, args.password);
 
-    run_two_loops(config);
+    let data_monitor = thread::spawn(move || run_md(config.0));
+    run_td(config.1); // main thread runs TD
+
+    data_monitor.join().unwrap();
+    println!("Both loops are finished. Main thread exiting.");
 }

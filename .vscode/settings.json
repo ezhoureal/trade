@@ -9,5 +9,8 @@
         "other": "on",
         "comments": "off",
         "strings": "on"
-    }
+    },
+    "cSpell.words": [
+        "thosttraderapi"
+    ]
 }
