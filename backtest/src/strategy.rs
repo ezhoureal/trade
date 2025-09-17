@@ -53,6 +53,7 @@ impl PairStrategy {
         }
     }
 
+    #[cfg(feature="live")]
     pub fn new_live(params: Params, data_path: &str) -> Self {
         let mut strategy = PairStrategy {
             params,
@@ -189,16 +190,15 @@ impl PairStrategy {
         entry.push_back(spread);
     }
 
+    #[cfg(feature="live")]
     pub fn pop_spread(&mut self) {
         for (_, history) in self.spread_histories.iter_mut() {
             history.pop_back();
         }
     }
 
-    fn load_spread_history<P: AsRef<std::path::Path>>(
-        &mut self,
-        path: P,
-    ) -> PolarsResult<()> {
+    #[cfg(feature="live")]
+    fn load_spread_history<P: AsRef<std::path::Path>>(&mut self, path: P) -> PolarsResult<()> {
         let df = LazyFrame::scan_parquet(
             path.as_ref().to_string_lossy().as_ref(),
             ScanArgsParquet::default(),
@@ -215,12 +215,7 @@ impl PairStrategy {
         let prefix_a = &self.params.commodity_a_prefix;
         let prefix_b = &self.params.commodity_b_prefix;
         let contracts_s = sorted.column("Contract")?.str()?;
-        let price_col = if sorted.get_column_index("Price").is_some() {
-            "Price"
-        } else {
-            "Close"
-        }; // fallback
-        let prices_f = sorted.column(price_col)?.f64()?;
+        let prices_f = sorted.column("Price")?.f64()?;
         let date_col = sorted.column("Date")?;
         let prefix_a_l = prefix_a.to_lowercase();
         let prefix_b_l = prefix_b.to_lowercase();
@@ -552,13 +547,15 @@ mod tests {
         ).unwrap();
         let path = write_temp_parquet(&df, "intra");
         let strat_params = params.clone();
-        let mut strat = PairStrategy::new(strat_params, HashMap::new());
-        strat
-            .load_spread_history(&path)
-            .expect("load history");
+        let mut strategy = PairStrategy::new(strat_params, HashMap::new());
+        strategy.load_spread_history(&path).expect("load history");
         // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
-        assert_eq!(strat.spread_histories.len(), 3, "should have 3 intra pairs");
-        for hist in strat.spread_histories.values() {
+        assert_eq!(
+            strategy.spread_histories.len(),
+            3,
+            "should have 3 intra pairs"
+        );
+        for hist in strategy.spread_histories.values() {
             assert_eq!(hist.len(), 2, "two days of spreads");
         }
         fs::remove_file(path).ok();
@@ -577,9 +574,7 @@ mod tests {
         ).unwrap();
         let path = write_temp_parquet(&df, "cross");
         let mut strat = PairStrategy::new(params.clone(), HashMap::new());
-        strat
-            .load_spread_history(&path)
-            .expect("load history");
+        strat.load_spread_history(&path).expect("load history");
         // Expect 4 unique AGxCU pairs
         assert_eq!(strat.spread_histories.len(), 4, "should have 4 cross pairs");
         for hist in strat.spread_histories.values() {

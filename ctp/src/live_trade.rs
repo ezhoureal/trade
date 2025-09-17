@@ -313,12 +313,12 @@ fn init_api(config: TdAccountConfig) -> Arc<TraderApi> {
 
     tdapi.register_front(&front_address);
 
-    let tdspi_box = Box::new(BaseTraderSpi {
+    let td_spi = Box::new(BaseTraderSpi {
         tdapi: Arc::clone(&tdapi),
         request_id: 0,
         config,
     });
-    tdapi.register_spi(Box::leak(tdspi_box));
+    tdapi.register_spi(Box::leak(td_spi));
 
     tdapi.subscribe_private_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
     tdapi.subscribe_public_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
