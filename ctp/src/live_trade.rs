@@ -1,16 +1,14 @@
-use std::{collections::HashMap, thread, time::Duration};
 use futures::StreamExt;
+use std::{collections::HashMap, thread, time::Duration};
 
-use ctp2rs::ffi::AssignFromString;
-use ctp2rs::v1alpha1::*;
-use ctp2rs::v1alpha1::TraderSpiEvent::*;
-
+use anyhow::Result;
 use backtest::{
     engine::{AccountStatus, Broker},
-    params::Params,
     strategy::PairStrategy,
 };
-use polars::prelude::LazyFrame;
+use ctp2rs::ffi::{AssignFromString, WrapToString};
+use ctp2rs::v1alpha1::TraderSpiEvent::*;
+use ctp2rs::v1alpha1::*;
 
 use crate::{
     market_data::{get_last_price, snapshot_contracts},
@@ -24,7 +22,7 @@ use crate::{
 /// can replace the virtual fills below.
 struct LiveBroker {
     api: TraderApi,
-    stream: &'static TraderSpiStream,
+    stream: &'static mut TraderSpiStream,
     request_id: i32,
     cash: f32,
     positions: HashMap<String, i32>, // signed position size (+ long / - short)
@@ -35,9 +33,37 @@ struct LiveBroker {
 }
 
 impl LiveBroker {
-    fn sync() -> Result<(), String> {
-        // Query current positions from broker and update self.positions accordingly.
-        // This is a blocking call; should be called infrequently (e.g. once at start).
+    async fn sync(&mut self) -> Result<()> {
+        for (pos, _) in self.positions.iter() {
+            self.request_id += 1;
+            let mut qry = CThostFtdcQryInvestorPositionField::default();
+            qry.InvestorID.assign_from_str(&self.config.td_user_id);
+            qry.BrokerID.assign_from_str(&self.broker_id);
+            qry.InstrumentID.assign_from_str(pos);
+            self.api
+                .req_qry_investor_position(&mut qry, self.request_id);
+        }
+
+        while let Some(spi_msg) = self.stream.next().await {
+            match spi_msg {
+                TraderSpiEvent::OnRspQryInvestorPosition(event) => {
+                    if let Some(pos) = event.investor_position {
+                        println!(
+                            "OnRspQryInvestorPosition {} pos={} today={} yd={}",
+                            pos.InstrumentID.to_string(),
+                            pos.Position,
+                            pos.TodayPosition,
+                            pos.YdPosition
+                        );
+                        self.positions
+                            .insert(pos.InstrumentID.to_string(), pos.Position as i32);
+                    }
+                }
+                _ => {
+                    println!("td sync got event: {:?}", spi_msg);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -196,32 +222,26 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     while let Some(spi_msg) = resp_stream.next().await {
         match spi_msg {
             OnFrontConnected(p) => {
-                // info!("前端连接成功回报 OnFrontConnected");
-                // let mut req = CThostFtdcReqAuthenticateField::default();
-                // req.BrokerID.assign_from_str(broker_id);
-                // req.UserID.assign_from_str(account);
-                // req.AuthCode.assign_from_str(auth_code);
-                // req.UserProductInfo.assign_from_str(user_product_info);
-                // req.AppID.assign_from_str(app_id);
-                // localctp.tdapi.req_authenticate(&mut req, get_request_id());
-                // info!("call req_authenticate done");
+                let mut req = CThostFtdcReqAuthenticateField::default();
+                req.UserID.assign_from_str(&config.td_user_id);
+                req.AuthCode.assign_from_str(&config.td_auth_code);
+                req.AppID.assign_from_str(&config.td_app_id);
+                tdapi.req_authenticate(&mut req, 0);
             }
             OnRspAuthenticate(p) => {
-                // info!("认证成功回报 OnRspAuthenticate");
-                // // 认证后才能登录
-                // let mut req = CThostFtdcReqUserLoginField::default();
-                // req.BrokerID.assign_from_str(broker_id);
-                // req.UserID.assign_from_str(account);
-                // req.Password.assign_from_str(&ctp_account.password);
+                let mut req = CThostFtdcReqUserLoginField::default();
+                req.UserID.assign_from_str(&config.td_user_id);
+                req.Password.assign_from_str(&config.td_password);
                 // // 登录后才能下单
-                // localctp.tdapi.req_user_login(&mut req, get_request_id());
-                // // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
+                tdapi.req_user_login(&mut req, 0);
                 break;
             }
             _ => {
+                println!("td waiting for auth rsp, got event: {:?}", spi_msg);
             }
         }
     }
+    println!("td login successful");
 
     LiveBroker {
         request_id: 0,
@@ -235,26 +255,11 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     }
 }
 
-pub async fn run_td(config: TdAccountConfig, df: LazyFrame) {
+#[tokio::main]
+pub async fn run_td(config: TdAccountConfig, mut strategy: PairStrategy) -> Result<()> {
     let mut broker = init_api(config).await;
-    let mut strategy = PairStrategy::new_live(
-        Params {
-            lookback_zscore: 20,
-            entry_z: 2.0,
-            exit_z: 0.5,
-            expiry_close_days: 3,
-            debug: true,
-            commodity_a_prefix: "ag".into(),
-            commodity_b_prefix: "ag".into(),
-            transaction_cost_pct: 0.0001,
-        },
-        df,
-    );
-
     loop {
         println!("td loop");
-        thread::sleep(Duration::from_secs(10));
-
         // Snapshot all current contracts (single lock read) and iterate
         let contracts = snapshot_contracts();
         println!("td snapshot has {} contracts", contracts.len());
@@ -262,8 +267,12 @@ pub async fn run_td(config: TdAccountConfig, df: LazyFrame) {
             println!("td sees {} price={} vol={}", c.name, c.price, c.volume);
         }
         let b = contracts.clone(); // intra-commodity pairs for now
-                                   // broker.update_positions();
-        let _ = strategy.trade(0, contracts, b, &mut broker);
+        // broker.update_positions();
+        
+        broker.sync().await?;
+        strategy.trade(0, contracts, b, &mut broker)?;
         strategy.pop_spread();
+
+        thread::sleep(Duration::from_secs(10));
     }
 }

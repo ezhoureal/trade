@@ -1,11 +1,12 @@
+use backtest::{params::Params, strategy::PairStrategy};
 use clap::{Parser, ValueEnum};
 use polars::prelude::*;
-use std::path::PathBuf;
+use std::{path::PathBuf, thread};
 
 mod data_monitor;
+mod helper;
 mod live_trade;
 mod market_data;
-mod helper;
 
 use data_monitor::*;
 use live_trade::*;
@@ -154,8 +155,25 @@ fn main() -> PolarsResult<()> {
         .filter_map(|opt| opt.map(|s| s.to_string()))
         .collect();
 
-    run_md(config.0, contracts);
-    run_td(config.1, df);
-    println!("Both loops are finished. Main thread exiting.");
+    let md_thread = thread::spawn(move || {
+        run_md(config.0, contracts);
+    });
+
+    let strategy = PairStrategy::new_live(
+        Params {
+            lookback_zscore: 20,
+            entry_z: 2.0,
+            exit_z: 0.5,
+            expiry_close_days: 3,
+            debug: true,
+            commodity_a_prefix: "ag".into(),
+            commodity_b_prefix: "ag".into(),
+            transaction_cost_pct: 0.0001,
+        },
+        df,
+    );
+    run_td(config.1, strategy).unwrap();
+
+    md_thread.join().unwrap();
     Ok(())
 }

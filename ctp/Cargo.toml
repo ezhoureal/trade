@@ -19,6 +19,7 @@ futures = "0.3.31"
 
 
 tokio = { version = "1.43.1", features = ["full"] }
+anyhow = "1.0.99"
 
 [features]
 # Provide empty feature to silence cfg checks used in code.
