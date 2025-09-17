@@ -14,6 +14,7 @@ wheels/
 .venv
 
 # Rust
+API/
 target/
 **/target/
 rust_strategy/*.json

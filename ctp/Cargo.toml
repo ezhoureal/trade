@@ -1,0 +1,9 @@
+[package]
+name = "ctp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tianer Zhou <ezhoureal@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+ctp2rs = { version = "0.1", optional = true } 

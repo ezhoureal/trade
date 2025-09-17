@@ -8,7 +8,6 @@ use clap::Parser;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 
-// use crate::engine::run_engine;
 use crate::{engine::run_engine, params::Params};
 
 #[derive(Serialize, Clone)]
@@ -91,7 +90,7 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
         debug: cli.debug,
         commodity_a_prefix: a_canon,
         commodity_b_prefix: b_canon,
-        transaction_cost_pct: 0.0001, // default unless extended CLI adds option
+        transaction_cost_pct: 0.00001, // default unless extended CLI adds option
     }
 }
 

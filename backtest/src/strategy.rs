@@ -327,8 +327,8 @@ impl<'a> PairStrategy<'a> {
     }
 
     fn stop_loss(&mut self, broker: &mut dyn Broker) -> Option<()> {
-        // Risk cap: e.g. 2% of capital allocated to the trade (position-specific)
-        const LOSS_RATIO_THRESHOLD: f32 = -0.02; // -2% of allocated capital
+        // Risk cap: e.g. 5% of capital allocated to the trade (position-specific)
+        const LOSS_RATIO_THRESHOLD: f32 = -0.05;
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, pos) in self.active_positions.iter() {
             let cur_price = self.cur_price(pair)?;
@@ -544,9 +544,9 @@ mod tests {
         let entry_spread = strat.active_positions.values().next().unwrap().entry_spread;
         assert!(entry_spread > 0.0);
 
-        // Adverse move: increase spread further so unrealized loss > 20%
-        // Provide one more bar with even larger spread (e.g. 4.0)
-        run_bar(&mut strat, &mut broker, 6, 14.0, 10.0, "A1", "B1", 10_000); // spread 4.0
+        // Adverse move: increase spread further so unrealized loss breaches 5% stop threshold
+        // Provide one more bar with even larger spread (e.g. 5.0) so PnL = -2.0 * size < -0.05 * gross_notional
+        run_bar(&mut strat, &mut broker, 6, 15.0, 10.0, "A1", "B1", 10_000); // spread 5.0
 
         assert_eq!(
             strat.active_positions.len(),

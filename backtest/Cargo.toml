@@ -1,8 +1,8 @@
 [package]
-name = "rust_strategy"
+name = "backtest"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <you@example.com>"]
+authors = ["Tianer Zhou <ezhoureal@gmail.com>"]
 license = "MIT"
 
 [dependencies]
