@@ -62,12 +62,7 @@ impl TraderSpi for BaseTraderSpi {
             req.Password.assign_from_str(&self.config.td_password);
 
             self.request_id += 1;
-            let ret = self.tdapi.req_user_login(
-                &mut req,
-                self.request_id,
-                TThostFtdcSystemInfoLenType::default(),
-                TThostFtdcClientSystemInfoType::default(),
-            );
+            let ret = self.tdapi.req_user_login(&mut req, self.request_id);
             println!("req_user_login result: {ret}");
         }
     }
@@ -175,5 +170,4 @@ pub fn run_td(config: CtpAccountConfig) {
         println!("td loop");
         thread::sleep(Duration::from_secs(10));
     }
-    // let _ = unsafe { Box::from_raw(tdspi_ptr2) };
 }

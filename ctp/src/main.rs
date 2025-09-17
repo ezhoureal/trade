@@ -1,7 +1,11 @@
-
-use crate::api_td::run_td;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 use std::thread;
+
+mod api_md;
+mod api_td;
+use api_md::*;
+use api_td::*;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Environment {
@@ -67,11 +71,11 @@ fn create_config_for_environment(
             let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.11/v6.7.11_20250617_traderapi64_se_windows/thostmduserapi_se.dll");
 
             #[cfg(target_os = "macos")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/mac_arm64/thosttraderapi_se.dylib");
+            let td_dynlib_path = base_path.join("api/mac_arm64/thosttraderapi_se.dylib");
             #[cfg(target_os = "linux")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/lin64/thosttraderapi_se.so");
+            let td_dynlib_path = base_path.join("api/lin64/thosttraderapi_se.so");
             #[cfg(target_os = "windows")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/win64/thosttraderapi_se.dll");
+            let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
             CtpAccountConfig {
                 md_user_id: user_id.clone(),
@@ -88,18 +92,18 @@ fn create_config_for_environment(
         Environment::Tts => {
             // 7x24小时模拟环境配置
             #[cfg(target_os = "macos")]
-            let md_dynlib_path = base_path.join("tts/v6_7_2/mac_arm64/thostmduserapi_se.dylib");
+            let md_dynlib_path = base_path.join("api/mac_arm64/thostmduserapi_se.dylib");
             #[cfg(target_os = "linux")]
-            let md_dynlib_path = base_path.join("tts/v6_7_2/lin64/thostmduserapi_se.so");
+            let md_dynlib_path = base_path.join("api/lin64/thostmduserapi_se.so");
             #[cfg(target_os = "windows")]
-            let md_dynlib_path = base_path.join("tts/v6_7_2/win64/thostmduserapi_se.dll");
+            let md_dynlib_path = base_path.join("api/win64/thostmduserapi_se.dll");
 
             #[cfg(target_os = "macos")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/mac_arm64/thosttraderapi_se.dylib");
+            let td_dynlib_path = base_path.join("api/mac_arm64/thosttraderapi_se.dylib");
             #[cfg(target_os = "linux")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/lin64/thosttraderapi_se.so");
+            let td_dynlib_path = base_path.join("api/lin64/thosttraderapi_se.so");
             #[cfg(target_os = "windows")]
-            let td_dynlib_path = base_path.join("tts/v6_7_2/win64/thosttraderapi_se.dll");
+            let td_dynlib_path = base_path.join("api/win64/thosttraderapi_se.dll");
 
             CtpAccountConfig {
                 md_user_id: user_id.clone(),
@@ -130,9 +134,9 @@ fn run_two_loops(config: CtpAccountConfig) {
 fn main() {
     let args = Args::parse();
 
-    let config = create_config_for_environment(args.environment, args.user_id, args.password);
+    println!("Running with environment: {:?}", args.environment);
 
-    println!("Using config: {:?}", config);
+    let config = create_config_for_environment(args.environment, args.user_id, args.password);
 
     run_two_loops(config);
 }

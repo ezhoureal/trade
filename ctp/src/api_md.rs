@@ -118,5 +118,4 @@ pub fn run_md(config: CtpAccountConfig) {
         println!("md loop");
         thread::sleep(Duration::from_secs(10));
     }
-    // let _ = unsafe { Box::from_raw(mdspi_ptr2) };
 }
