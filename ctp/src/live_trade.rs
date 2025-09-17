@@ -10,29 +10,7 @@ use ctp2rs::{
     ffi::{gb18030_cstr_i8_to_str, AssignFromString, WrapToString},
     print_rsp_info,
     v1alpha1::{
-        CThostFtdcInputOrderField,
-        CThostFtdcInvestorPositionField,
-        CThostFtdcQryInvestorPositionField,
-        CThostFtdcReqAuthenticateField,
-        CThostFtdcReqUserLoginField,
-        CThostFtdcRspAuthenticateField,
-        CThostFtdcRspInfoField,
-        CThostFtdcRspUserLoginField,
-        CThostFtdcSettlementInfoConfirmField,
-        THOST_FTDC_CC_Immediately,
-        // constants
-        THOST_FTDC_D_Buy,
-        THOST_FTDC_D_Sell,
-        THOST_FTDC_FCC_NotForceClose,
-        THOST_FTDC_HF_Speculation,
-        THOST_FTDC_OF_Close,
-        THOST_FTDC_OF_Open,
-        THOST_FTDC_OPT_LimitPrice,
-        TraderApi,
-        TraderSpi,
-        THOST_FTDC_TC_GFD,
-        THOST_FTDC_VC_AV,
-        THOST_TE_RESUME_TYPE,
+        CThostFtdcInputOrderField, CThostFtdcInvestorPositionField, CThostFtdcQryInvestorPositionField, CThostFtdcReqAuthenticateField, CThostFtdcReqUserLoginField, CThostFtdcRspAuthenticateField, CThostFtdcRspInfoField, CThostFtdcRspUserLoginField, CThostFtdcSettlementInfoConfirmField, THOST_FTDC_CC_Immediately, THOST_FTDC_D_Buy, THOST_FTDC_D_Sell, THOST_FTDC_FCC_NotForceClose, THOST_FTDC_HF_Speculation, THOST_FTDC_OF_Close, THOST_FTDC_OF_Open, THOST_FTDC_OPT_LimitPrice, TraderApi, TraderSpi, TraderSpiInner, TraderSpiStream, THOST_FTDC_TC_GFD, THOST_FTDC_VC_AV, THOST_TE_RESUME_TYPE
     },
 };
 use polars::prelude::LazyFrame;
@@ -42,136 +20,14 @@ use crate::{
     TdAccountConfig,
 };
 
-impl TraderSpi for LiveBroker {
-    fn on_front_connected(&mut self) {
-        println!("tdspi.on_front_connected !!!");
-        let mut req = CThostFtdcReqAuthenticateField::default();
-        req.BrokerID.assign_from_str("9999");
-        req.UserID.assign_from_str(&self.config.td_user_id);
-        req.AppID.assign_from_str(&self.config.td_app_id);
-        req.AuthCode.assign_from_str(&self.config.td_auth_code);
-
-        self.request_id += 1;
-        self.api.req_authenticate(&mut req, self.request_id);
-    }
-
-    fn on_front_disconnected(&mut self, n_reason: i32) {
-        println!("on_front_disconnected: reason -> {n_reason}")
-    }
-
-    fn on_heart_beat_warning(&mut self, n_time_lapse: i32) {}
-
-    fn on_rsp_authenticate(
-        &mut self,
-        p_rsp_authenticate_field: Option<&CThostFtdcRspAuthenticateField>,
-        p_rsp_info: Option<&CThostFtdcRspInfoField>,
-        n_request_id: i32,
-        b_is_last: bool,
-    ) {
-        println!("on_rsp_authenticate");
-        print_rsp_info!(p_rsp_info);
-        if let Some(p_rsp_info) = p_rsp_info {
-            if p_rsp_info.ErrorID != 0 {
-                return;
-            }
-        }
-
-        if b_is_last {
-            let mut req = CThostFtdcReqUserLoginField::default();
-            req.BrokerID.assign_from_str("9999");
-            req.UserID.assign_from_str(&self.config.td_user_id);
-            req.Password.assign_from_str(&self.config.td_password);
-
-            self.request_id += 1;
-            let ret = self.api.req_user_login(&mut req, self.request_id);
-            println!("req_user_login result: {ret}");
-        }
-    }
-
-    fn on_rsp_user_login(
-        &mut self,
-        p_rsp_user_login: Option<&CThostFtdcRspUserLoginField>,
-        p_rsp_info: Option<&CThostFtdcRspInfoField>,
-        n_request_id: i32,
-        b_is_last: bool,
-    ) {
-        print_rsp_info!(p_rsp_info);
-        if b_is_last {
-            let mut req = CThostFtdcSettlementInfoConfirmField::default();
-            req.BrokerID.assign_from_str("9999");
-            req.InvestorID.assign_from_str(&self.config.td_user_id);
-
-            self.request_id += 1;
-            let ret = self
-                .api
-                .req_settlement_info_confirm(&mut req, self.request_id);
-            println!("req_user_login result: {ret}");
-        }
-    }
-
-    fn on_rsp_qry_trading_account(
-        &mut self,
-        p_trading_account: Option<&ctp2rs::v1alpha1::CThostFtdcTradingAccountField>,
-        p_rsp_info: Option<&CThostFtdcRspInfoField>,
-        n_request_id: i32,
-        b_is_last: bool,
-    ) {
-        if let Some(p) = p_trading_account {
-            self.cash = p.Available as f32;
-            println!("account cash: {}", self.cash);
-        }
-    }
-
-    fn on_rsp_settlement_info_confirm(
-        &mut self,
-        p_settlement_info_confirm: Option<&CThostFtdcSettlementInfoConfirmField>,
-        p_rsp_info: Option<&CThostFtdcRspInfoField>,
-        n_request_id: i32,
-        b_is_last: bool,
-    ) {
-        print_rsp_info!(p_rsp_info);
-        if b_is_last {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            self.request_id += 1;
-            let mut req = CThostFtdcQryInvestorPositionField::default();
-            let ret = self
-                .api
-                .req_qry_investor_position(&mut req, self.request_id);
-            println!("req_qry_investor_position result: {ret}");
-        }
-    }
-
-    fn on_rsp_qry_investor_position(
-        &mut self,
-        p_investor_position: Option<&CThostFtdcInvestorPositionField>,
-        p_rsp_info: Option<&CThostFtdcRspInfoField>,
-        n_request_id: i32,
-        b_is_last: bool,
-    ) {
-        print_rsp_info!(p_rsp_info);
-        if let Some(p) = p_investor_position {
-            let instrument_id = p.InstrumentID.to_string();
-            let user_id = p.InvestorID.to_string();
-            println!(
-                "{user_id} holds {instrument_id} with size {}",
-                p.TodayPosition
-            );
-
-            self.positions.insert(instrument_id, p.TodayPosition);
-        }
-        if b_is_last {
-            println!("on_rsp_qry_investor_position finish!");
-        }
-    }
-}
-
 /// Very lightweight live broker implementation.
 /// Currently this manages a virtual position & cash book locally while
 /// delegating eventual real order routing integration to future work.
 /// Once order callbacks are wired, the req_order_insert calls (commented)
 /// can replace the virtual fills below.
 struct LiveBroker {
-    api: Arc<TraderApi>,
+    api: TraderApi,
+    stream: TraderSpiStream,
     request_id: i32,
     cash: f32,
     positions: HashMap<String, i32>, // signed position size (+ long / - short)
@@ -179,6 +35,14 @@ struct LiveBroker {
     investor_id: String,
 
     pub config: TdAccountConfig,
+}
+
+impl LiveBroker {
+    fn sync() -> Result<(), String> {
+        // Query current positions from broker and update self.positions accordingly.
+        // This is a blocking call; should be called infrequently (e.g. once at start).
+
+    }
 }
 
 impl Broker for LiveBroker {
@@ -306,8 +170,7 @@ impl Broker for LiveBroker {
     }
 }
 
-println!("tdapi start here!");
-fn init_api(config: TdAccountConfig) -> &'static mut LiveBroker {
+async fn init_api(config: TdAccountConfig) -> LiveBroker {
     println!(
         "td dynlib_path: {}",
         config.td_dynlib_path.to_string_lossy()
@@ -318,35 +181,66 @@ fn init_api(config: TdAccountConfig) -> &'static mut LiveBroker {
 
     #[cfg(feature = "ctp_v6_7_11")]
     let tdapi = TraderApi::create_api(&config.td_dynlib_path, "./td_", true);
-    let tdapi = Arc::new(tdapi);
 
     let front_address = config.td_front_address.clone();
     println!("td get_api_version: {}", tdapi.get_api_version());
 
     tdapi.register_front(&front_address);
 
-    let broker = Box::new(LiveBroker {
-        request_id: 0,
-        config,
-        api: tdapi.clone(),
-        cash: 0.0,
-        positions: HashMap::new(),
-        broker_id: "9999".into(),
-        investor_id: "9991".into(),
-    });
-    let broker_raw = Box::leak(broker);
-    tdapi.register_spi(broker_raw as *mut dyn TraderSpi);
+    let inner = TraderSpiInner::new();
+    let resp_stream = Box::new(TraderSpiStream::new(inner));
+    tdapi.register_spi(Box::leak(resp_stream) as *mut dyn TraderSpi);
+
     tdapi.subscribe_private_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
     tdapi.subscribe_public_topic(THOST_TE_RESUME_TYPE::THOST_TERT_QUICK);
 
     tdapi.init();
 
-    println!("tdapi init");
-    broker_raw
+    while let Some(spi_msg) = resp_stream.next().await {
+        match spi_msg {
+            OnFrontConnected(p) => {
+                info!("前端连接成功回报 OnFrontConnected");
+                let mut req = CThostFtdcReqAuthenticateField::default();
+                req.BrokerID.assign_from_str(broker_id);
+                req.UserID.assign_from_str(account);
+                req.AuthCode.assign_from_str(auth_code);
+                req.UserProductInfo.assign_from_str(user_product_info);
+                req.AppID.assign_from_str(app_id);
+                localctp.tdapi.req_authenticate(&mut req, get_request_id());
+                info!("call req_authenticate done");
+            }
+            OnRspAuthenticate(p) => {
+                info!("认证成功回报 OnRspAuthenticate");
+                // 认证后才能登录
+                let mut req = CThostFtdcReqUserLoginField::default();
+                req.BrokerID.assign_from_str(broker_id);
+                req.UserID.assign_from_str(account);
+                req.Password.assign_from_str(&ctp_account.password);
+                // 登录后才能下单
+                localctp.tdapi.req_user_login(&mut req, get_request_id());
+                // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
+                break;
+            }
+            _ => {
+                info!("其它回报");
+            }
+        }
+    }
+
+    LiveBroker {
+        request_id: 0,
+        config,
+        api: tdapi,
+        stream: resp_stream,
+        cash: 0.0,
+        positions: HashMap::new(),
+        broker_id: "9999".into(),
+        investor_id: "9991".into(),
+    }
 }
 
 pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
-    let broker = init_api(config);
+    let mut broker = init_api(config);
     let mut strategy = PairStrategy::new_live(
         Params {
             lookback_zscore: 20,
@@ -372,7 +266,10 @@ pub fn run_td(config: TdAccountConfig, df: LazyFrame) {
             println!("td sees {} price={} vol={}", c.name, c.price, c.volume);
         }
         let b = contracts.clone(); // intra-commodity pairs for now
-        let _ = strategy.trade(0, contracts, b, broker as &mut dyn Broker);
+        broker.update_positions();
+        let _ = strategy.trade(0, contracts, b, &mut broker);
         strategy.pop_spread();
     }
+
+    broker.conclude_equity();
 }

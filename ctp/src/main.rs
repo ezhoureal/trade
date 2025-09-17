@@ -5,6 +5,8 @@ use std::path::PathBuf;
 mod data_monitor;
 mod live_trade;
 mod market_data;
+mod helper;
+
 use data_monitor::*;
 use live_trade::*;
 
