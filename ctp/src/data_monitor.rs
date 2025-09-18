@@ -52,10 +52,10 @@ impl MdSpi for BaseMdSpi {
             let instrument = q.InstrumentID.to_string();
             let last_price = q.LastPrice as f32;
             update_quote(&instrument, last_price, q.Volume as u32);
-            println!(
-                "on_rtn_depth_market_data {} last_price={} volume={}",
-                instrument, last_price, q.Volume
-            );
+            // println!(
+            //     "on_rtn_depth_market_data {} last_price={} volume={}",
+            //     instrument, last_price, q.Volume
+            // );
         }
     }
 }

@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::{collections::HashMap, env, thread, time::Duration};
+use std::{any::Any, collections::HashMap, env, thread, time::Duration};
 
 use anyhow::Result;
 use backtest::{
@@ -15,6 +15,12 @@ use crate::{
     TdAccountConfig,
 };
 
+struct Order {
+    symbol: String,
+    qty: i32,
+    open: bool,
+}
+
 struct LiveBroker {
     api: TraderApi,
     stream: &'static mut TraderSpiStream,
@@ -22,72 +28,87 @@ struct LiveBroker {
     cash: f32,
     positions: HashMap<String, i32>, // signed position size (+ long / - short)
     broker_id: String,
-    investor_id: String,
-
+    pending_orders: Vec<Order>,
     pub config: TdAccountConfig,
 }
 
 impl LiveBroker {
-    async fn sync(&mut self, contracts: &[ContractData]) -> Result<()> {
+    async fn sync_position(&mut self, contract: &ContractData) -> Option<()> {
+        self.request_id += 1;
+        let mut qry = CThostFtdcQryInvestorPositionField::default();
+        qry.InvestorID.assign_from_str(&self.config.td_user_id);
+        qry.InstrumentID.assign_from_str(contract.name.as_str());
+        self.api
+            .req_qry_investor_position(&mut qry, self.request_id);
+
+        let mut pos_net = 0;
+        while let Some(spi_msg) = self.stream.next().await {
+            match spi_msg {
+                TraderSpiEvent::OnRspQryInvestorPosition(event) => {
+                    if let Some(pos) = event.investor_position {
+                        if pos.PosiDirection as u8 == THOST_FTDC_PD_Long {
+                            pos_net += pos.Position as i32;
+                        } else if pos.PosiDirection as u8 == THOST_FTDC_PD_Short {
+                            pos_net -= pos.Position as i32;
+                        }
+                        println!(
+                            "OnRspQryInvestorPosition: contract = {}, position {}, margin = {}, direction = {}", pos.InstrumentID.to_string(),
+                            pos.Position, pos.UseMargin, pos.PosiDirection
+                        );
+                    }
+                    if event.is_last {
+                        self.positions
+                            .insert(contract.name.clone(), pos_net);
+                        break;
+                    }
+                }
+                _ => {
+                    println!(
+                        "unexpected event while syncing position: {:?}",
+                        spi_msg.type_id()
+                    );
+                }
+            }
+        }
+        Some(())
+    }
+
+    async fn sync(&mut self, contracts: &[ContractData]) -> Option<()> {
         self.request_id += 1;
         let mut qry = CThostFtdcQryTradingAccountField::default();
         qry.InvestorID.assign_from_str(&self.config.td_user_id);
         self.api.req_qry_trading_account(&mut qry, self.request_id);
-
-        for contract in contracts.iter() {
-            self.request_id += 1;
-            let mut qry = CThostFtdcQryInvestorPositionDetailField::default();
-            qry.InvestorID.assign_from_str(&self.config.td_user_id);
-            qry.InstrumentID.assign_from_str(contract.name.as_str());
-            self.api
-                .req_qry_investor_position_detail(&mut qry, self.request_id);
-        }
-
-        while let Some(spi_msg) = self.stream.next().await {
-            match spi_msg {
-                TraderSpiEvent::OnRspQryTradingAccount(event) => {
-                    if let Some(acc) = event.trading_account {
-                        println!(
-                            "OnRspQryTradingAccount: balance={} available={} margin={} ",
-                            acc.Balance, acc.Available, acc.CurrMargin
-                        );
-                        self.cash = acc.Available as f32;
-                    }
-                }
-                TraderSpiEvent::OnRspQryInvestorPositionDetail(event) => {
-                    if let Some(pos) = event.investor_position_detail {
-                        println!(
-                            "OnRspQryInvestorPosition {} pos={}",
-                            pos.InstrumentID.to_string(),
-                            pos.Volume,
-                        );
-                        self.positions
-                            .insert(pos.InstrumentID.to_string(), pos.Volume);
-                    }
-                    if event.is_last {
-                        break; // all positions received
-                    }
-                }
-                _ => {
-                    println!("td sync got event: {:?}", spi_msg);
-                }
+        let spi_msg = self.stream.next().await?;
+        if let TraderSpiEvent::OnRspQryTradingAccount(event) = spi_msg {
+            if let Some(acc) = event.trading_account {
+                println!(
+                    "OnRspQryTradingAccount: balance={} available={} margin={} ",
+                    acc.Balance, acc.Available, acc.CurrMargin
+                );
+                self.cash = acc.Available as f32;
+            } else if let Some(err) = event.rsp_info {
+                println!(
+                    "OnRspQryTradingAccount: error message = {:?}",
+                    err.ErrorMsg.to_string()
+                );
             }
         }
-        Ok(())
+        for contract in contracts.iter() {
+            self.sync_position(contract).await;
+        }
+        Some(())
     }
 
     fn order_default(&self, symbol: &str, qty: i32) -> CThostFtdcInputOrderField {
         let mut order = CThostFtdcInputOrderField::default();
-        order.BrokerID.assign_from_str(&self.broker_id);
-        order.InvestorID.assign_from_str(&self.investor_id);
+        order.InvestorID.assign_from_str(&self.config.td_user_id);
+        order.UserID.assign_from_str(&self.config.td_user_id);
         order.InstrumentID.assign_from_str(symbol);
-        order.Direction = THOST_FTDC_D_Buy as i8;
-        order.CombHedgeFlag[0] = THOST_FTDC_HF_Arbitrage as i8;
-        order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
-        order.TimeCondition = THOST_FTDC_TC_GFD as i8; // Good For Day
-        order.VolumeCondition = THOST_FTDC_VC_MV as i8; // Min volume
-        order.MinVolume = 1;
-        order.VolumeTotalOriginal = qty.abs();
+        order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
+        order.OrderPriceType = THOST_FTDC_OPT_BestPrice as i8;
+        order.TimeCondition = THOST_FTDC_TC_GFD as i8; // Good for Day
+        order.VolumeCondition = THOST_FTDC_VC_MV as i8; // Complete volume
+        order.VolumeTotalOriginal = qty;
         order.Direction = if qty > 0 {
             THOST_FTDC_D_Buy as i8
         } else {
@@ -96,33 +117,109 @@ impl LiveBroker {
         order
     }
 
-    fn execute_trade(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+    async fn submit_order(&mut self, symbol: &str, qty: i32, open: bool) -> Option<()> {
         let price = get_last_price(symbol)?;
+        println!(
+            "placed order: {:?}, qty = {}, open = {}, cost = {}, cash = {}",
+            symbol,
+            qty,
+            open,
+            price * qty as f32,
+            self.cash
+        );
         let mut order = self.order_default(symbol, qty);
         order.LimitPrice = price as f64;
+        order.TimeCondition = THOST_FTDC_TC_GFD as i8; // Good for Day
+        order.CombOffsetFlag[0] = if open {
+            THOST_FTDC_OF_Open as i8
+        } else {
+            THOST_FTDC_OF_CloseToday as i8
+        };
 
         self.request_id += 1;
         self.api.req_order_insert(&mut order, self.request_id);
 
-        // immediate status update (approximate)
-        let size_entry = self.positions.entry(symbol.to_string()).or_insert(0);
-        self.cash -= price * qty as f32;
-        *size_entry += qty as i32;
-        let new_size = *size_entry;
-        if new_size == 0 {
-            self.positions.remove(symbol);
+        while let Some(spi_msg) = self.stream.next().await {
+            match spi_msg {
+                OnRtnOrder(p) => {
+                    let order = p.order.unwrap();
+                    let broker_id = order.BrokerID.to_string();
+                    let investor_id = order.InvestorID.to_string();
+                    let exchange_id = order.ExchangeID.to_string();
+                    let order_ref = order.OrderRef.to_string();
+                    let instrument_id = order.InstrumentID.to_string();
+
+                    let order_status = match order.OrderStatus as u8 {
+                        THOST_FTDC_OST_AllTraded => "全部成交",
+                        THOST_FTDC_OST_PartTradedQueueing => "部分成交还在队列中",
+                        THOST_FTDC_OST_PartTradedNotQueueing => "部分成交不在队列中",
+                        THOST_FTDC_OST_NoTradeQueueing => "未成交还在队列中",
+                        THOST_FTDC_OST_NoTradeNotQueueing => "未成交不在队列中",
+                        THOST_FTDC_OST_Canceled => "已撤销",
+                        THOST_FTDC_OST_Unknown => "未知状态",
+                        THOST_FTDC_OST_NotTouched => "尚未触发",
+                        THOST_FTDC_OST_Touched => "已触发",
+                        _ => "其他状态",
+                    };
+
+                    println!("报单成功回报 Order Return: BrokerID: {}, InvestorID: {}, ExchangeID: {}, OrderRef: {}, OrderStatus: {}, InstrumentID: {}", 
+                          broker_id, investor_id, exchange_id, order_ref, order_status, instrument_id);
+                }
+                OnRspOrderInsert(p) => {
+                    let rsp_info = p.rsp_info.unwrap();
+                    println!(
+                        "报单失败回报 OnRspOrderInsert {}: {}",
+                        rsp_info.ErrorID,
+                        rsp_info.ErrorMsg.to_string(),
+                    );
+
+                    break;
+                }
+                OnRtnTrade(p) => {
+                    let trade = p.trade.unwrap();
+
+                    let broker_id = trade.BrokerID.to_string();
+                    let investor_id = trade.InvestorID.to_string();
+                    let exchange_id = trade.ExchangeID.to_string();
+                    let trade_id = trade.TradeID.to_string();
+                    let order_ref = trade.OrderRef.to_string();
+                    let instrument_id = trade.InstrumentID.to_string();
+                    let price = trade.Price;
+                    let volume = trade.Volume;
+
+                    println!("成交回报 OnRtnTrade: OrderRef: {}, BrokerID: {}, InvestorID: {}, ExchangeID: {}, TradeID: {}, InstrumentID: {}, Price: {:.2}, Volume: {}",
+                          order_ref, broker_id, investor_id, exchange_id, trade_id, instrument_id, price, volume);
+
+                    // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
+                    break;
+                }
+
+                _ => {
+                    println!("其它回报");
+                }
+            }
         }
-        Some(new_size)
+        Some(())
     }
 }
 
 impl Broker for LiveBroker {
     fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        self.execute_trade(symbol, qty)
+        self.pending_orders.push(Order {
+            symbol: symbol.to_string(),
+            qty,
+            open: true,
+        });
+        Some(0)
     }
 
     fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        self.execute_trade(symbol, qty)
+        self.pending_orders.push(Order {
+            symbol: symbol.to_string(),
+            qty,
+            open: false,
+        });
+        Some(0)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -176,24 +273,22 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
 
     while let Some(spi_msg) = resp_stream.next().await {
         match spi_msg {
-            OnFrontConnected(p) => {
-                println!("td OnFrontConnected: {:?}", p);
+            OnFrontConnected(_) => {
+                println!("td OnFrontConnected");
                 let mut req = CThostFtdcReqAuthenticateField::default();
                 req.UserID.assign_from_str(&config.td_user_id);
                 req.AuthCode.assign_from_str(&config.td_auth_code);
                 req.AppID.assign_from_str(&config.td_app_id);
                 tdapi.req_authenticate(&mut req, 0);
             }
-            OnRspAuthenticate(p) => {
-                println!("td OnRspAuthenticate: {:?}", p);
+            OnRspAuthenticate(_) => {
                 let mut req = CThostFtdcReqUserLoginField::default();
                 req.UserID.assign_from_str(&config.td_user_id);
                 req.Password.assign_from_str(&config.td_password);
-                // // 登录后才能下单
                 tdapi.req_user_login(&mut req, 0);
             }
-            OnRspUserLogin(p) => {
-                println!("td OnRspUserLogin: {:?}", p);
+            OnRspUserLogin(_) => {
+                println!("td OnRspUserLogin");
                 break;
             }
             _ => {
@@ -209,24 +304,57 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
         stream: resp_stream,
         cash: 0.0,
         positions: HashMap::new(),
+        pending_orders: Vec::new(),
         broker_id: env::var("OPENCTP_USER_ID").unwrap_or("".into()),
-        investor_id: env::var("OPENCTP_USER_ID").unwrap_or("".into()),
     }
 }
 
 #[tokio::main]
-pub async fn run_td(config: TdAccountConfig, mut strategy: PairStrategy) -> Result<()> {
+pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Result<()> {
     let mut broker = init_api(config).await;
+    thread::sleep(Duration::from_secs(1));
     loop {
-        thread::sleep(Duration::from_secs(10));
-        // Snapshot all current contracts (single lock read) and iterate
         let contracts = snapshot_contracts();
         println!("td loop, snapshot has {} contracts", contracts.len());
         let b = contracts.clone(); // intra-commodity pairs for now
                                    // broker.update_positions();
 
-        broker.sync(&contracts.clone()).await?;
+        broker.sync(&contracts.clone()).await;
+
+        let positions_to_close: Vec<(String, i32)> = broker
+            .positions
+            .iter()
+            .filter(|(symbol, qty)| **qty != 0)
+            .map(|(symbol, qty)| (symbol.clone(), *qty))
+            .collect();
+
+        for (symbol, qty) in positions_to_close {
+            broker.submit_order(&symbol, -qty, false).await;
+        }
+
+        let local_positions = strategy.flatten_positions();
+        if broker.positions != local_positions {
+            println!(
+                "warning, broker position = {}, strategy position = {}",
+                format!("{:?}", broker.positions),
+                format!("{:?}", local_positions)
+            );
+        }
+
         strategy.trade(0, contracts, b, &mut broker)?;
         strategy.pop_spread();
+
+        println!(
+            "fulfil_orders: pending_orders={}",
+            broker.pending_orders.len()
+        );
+        let orders = std::mem::take(&mut broker.pending_orders);
+        for order in orders.iter() {
+            broker
+                .submit_order(&order.symbol, order.qty, order.open)
+                .await;
+        }
+        thread::sleep(Duration::from_secs(10));
     }
+    Ok(())
 }

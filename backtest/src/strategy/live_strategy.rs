@@ -1,6 +1,8 @@
 use super::PairStrategy;
 use crate::params::Params;
 use polars::prelude::*;
+#[cfg(feature = "live")]
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
@@ -29,7 +31,7 @@ impl PairStrategy {
         strategy
             .load_spread_history(df)
             .expect("Failed to load spread history");
-        strategy.load_positions().expect("Failed to load positions");
+        let _ = strategy.load_positions();
         strategy
     }
 
@@ -50,7 +52,25 @@ impl PairStrategy {
                 self.active_positions.insert((item.a, item.b), item.pos);
             }
         }
+        println!("Loaded positions: {:?}", self.active_positions);
         Ok(())
+    }
+
+    pub fn flatten_positions(&self) -> HashMap<String, i32>{
+        let mut flat: HashMap<String, i32> = HashMap::new();
+        for ((a, b), pos) in self.active_positions.iter() {
+            match pos.kind {
+                super::PositionKind::Long => {
+                    *flat.entry(a.clone()).or_insert(0) += pos.size as i32;
+                    *flat.entry(b.clone()).or_insert(0) -= pos.size as i32;
+                }
+                super::PositionKind::Short => {
+                    *flat.entry(a.clone()).or_insert(0) -= pos.size as i32;
+                    *flat.entry(b.clone()).or_insert(0) += pos.size as i32;
+                }
+            }
+        }
+        flat
     }
 
     pub fn save_positions(&self) {

@@ -159,7 +159,7 @@ fn main() -> PolarsResult<()> {
         run_md(config.0, contracts);
     });
 
-    let strategy = PairStrategy::new_live(
+    let mut strategy = PairStrategy::new_live(
         Params {
             lookback_zscore: 20,
             entry_z: 2.0,
@@ -172,8 +172,9 @@ fn main() -> PolarsResult<()> {
         },
         df,
     );
-    run_td(config.1, strategy).unwrap();
-
+    run_td(config.1, &mut strategy).unwrap();
     md_thread.join().unwrap();
+
+    strategy.save_positions();
     Ok(())
 }
