@@ -78,18 +78,18 @@ pub struct AccountStatus {
 }
 
 pub trait Broker {
-    fn buy(&mut self, symbol: &str, qty: u32) -> Option<i32>;
-    fn sell(&mut self, symbol: &str, qty: u32) -> Option<i32>;
+    fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32>;
+    fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32>;
 
     fn get_status(&'_ self) -> AccountStatus;
 }
 
 impl<'a> Broker for Engine<'a> {
-    fn buy(&mut self, symbol: &str, qty: u32) -> Option<i32> {
+    fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
         self.trade(symbol, qty as i32)
     }
-    fn sell(&mut self, symbol: &str, qty: u32) -> Option<i32> {
-        self.trade(symbol, -(qty as i32))
+    fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        self.trade(symbol, qty as i32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {

@@ -53,7 +53,7 @@ impl PairStrategy {
         }
     }
 
-    #[cfg(feature="live")]
+    #[cfg(feature = "live")]
     pub fn new_live(params: Params, df: LazyFrame) -> Self {
         let mut strategy = PairStrategy {
             params,
@@ -121,13 +121,16 @@ impl PairStrategy {
     ) -> Option<()> {
         match pos.kind {
             PositionKind::Long => {
-                broker.sell(pair.0.as_str(), pos.size);
-                broker.buy(pair.1.as_str(), pos.size);
+                broker.exec_close(pair.0.as_str(), -(pos.size as i32));
+                broker.exec_close(pair.1.as_str(), pos.size as i32);
             }
             PositionKind::Short => {
-                broker.buy(pair.0.as_str(), pos.size);
-                broker.sell(pair.1.as_str(), pos.size);
+                broker.exec_close(pair.0.as_str(), pos.size as i32);
+                broker.exec_close(pair.1.as_str(), -(pos.size as i32));
             }
+        }
+        if self.params.debug {
+            println!("Closing {:?} {:?} size {} reason {}", pair, pos.kind, pos.size, reason);
         }
 
         let cur_price = self.cur_price(&pair)?;
@@ -190,14 +193,14 @@ impl PairStrategy {
         entry.push_back(spread);
     }
 
-    #[cfg(feature="live")]
+    #[cfg(feature = "live")]
     pub fn pop_spread(&mut self) {
         for (_, history) in self.spread_histories.iter_mut() {
             history.pop_back();
         }
     }
 
-    #[cfg(feature="live")]
+    #[cfg(feature = "live")]
     fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
         let sort_opts = SortMultipleOptions {
             descending: vec![false],
@@ -353,13 +356,16 @@ impl PairStrategy {
         }
         match kind {
             PositionKind::Long => {
-                broker.buy(pair.0.as_str(), size);
-                broker.sell(pair.1.as_str(), size);
+                broker.exec_open(pair.0.as_str(), size as i32);
+                broker.exec_open(pair.1.as_str(), -(size as i32));
             }
             PositionKind::Short => {
-                broker.sell(pair.0.as_str(), size);
-                broker.buy(pair.1.as_str(), size);
+                broker.exec_open(pair.0.as_str(), -(size as i32));
+                broker.exec_open(pair.1.as_str(), size as i32);
             }
+        }
+        if self.params.debug {
+            println!("Entering {:?} {:?} size {} z={:.3}", pair, kind, size, z);
         }
 
         self.active_positions.insert(
@@ -480,20 +486,20 @@ mod tests {
     }
 
     impl Broker for TestBroker {
-        fn buy(&mut self, symbol: &str, _qty: u32) -> Option<i32> {
-            self.traded.insert(format!("BUY:{symbol}"));
-            Some(0)
-        }
-        fn sell(&mut self, symbol: &str, _qty: u32) -> Option<i32> {
-            self.traded.insert(format!("SELL:{symbol}"));
-            Some(0)
-        }
         fn get_status(&'_ self) -> AccountStatus {
             AccountStatus {
                 cash: self.cash,
                 equity: self.equity,
                 gross_exposure: self.equity,
             }
+        }
+
+        fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+            None
+        }
+
+        fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+            None
         }
     }
 
@@ -524,7 +530,9 @@ mod tests {
         ).unwrap();
         let strat_params = params.clone();
         let mut strategy = PairStrategy::new(strat_params, HashMap::new());
-        strategy.load_spread_history(df.lazy()).expect("load history");
+        strategy
+            .load_spread_history(df.lazy())
+            .expect("load history");
         // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
         assert_eq!(
             strategy.spread_histories.len(),

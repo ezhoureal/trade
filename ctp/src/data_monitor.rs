@@ -44,38 +44,17 @@ impl MdSpi for BaseMdSpi {
         }
     }
 
-    fn on_rsp_sub_market_data(
-        &mut self,
-        specific_instrument: Option<&CThostFtdcSpecificInstrumentField>,
-        rsp_info: Option<&CThostFtdcRspInfoField>,
-        request_id: i32,
-        is_last: bool,
-    ) {
-        print_rsp_info!(rsp_info);
-        println!(
-            "on_rsp_sub_market_data: instrument_id[{:?}], {:?}, {:?}",
-            specific_instrument.unwrap().InstrumentID.to_string(),
-            request_id,
-            is_last
-        );
-    }
-
     fn on_rtn_depth_market_data(
         &mut self,
         depth_market_data: Option<&CThostFtdcDepthMarketDataField>,
     ) {
-        println!("OnRtnDepthMarketData!");
-
         if let Some(q) = depth_market_data {
             let instrument = q.InstrumentID.to_string();
             let last_price = q.LastPrice as f32;
-            // For now we don't have volume in this callback struct? If available use q.Volume (example) else 0
-            let volume: u32 = 0; // placeholder until correct field identified
-            update_quote(&instrument, last_price, volume);
+            update_quote(&instrument, last_price, q.Volume as u32);
             println!(
-                "md update: {} -> {}",
-                instrument.to_ascii_lowercase(),
-                last_price
+                "on_rtn_depth_market_data {} last_price={} volume={}",
+                instrument, last_price, q.Volume
             );
         }
     }
