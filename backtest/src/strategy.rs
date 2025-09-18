@@ -107,16 +107,17 @@ impl PairStrategy {
     ) -> Option<()> {
         match pos.kind {
             PositionKind::Long => {
-                broker.exec_close(pair.0.as_str(), -(pos.size as i32));
-                broker.exec_close(pair.1.as_str(), pos.size as i32);
+                broker.exec_spread((&pair.0, &pair.1), -(pos.size as i32), false);
             }
             PositionKind::Short => {
-                broker.exec_close(pair.0.as_str(), pos.size as i32);
-                broker.exec_close(pair.1.as_str(), -(pos.size as i32));
+                broker.exec_spread((&pair.0, &pair.1), pos.size as i32, false);
             }
         }
         if self.params.debug {
-            println!("Closing {:?} {:?} size {} reason {}", pair, pos.kind, pos.size, reason);
+            println!(
+                "Closing {:?} {:?} size {} reason {}",
+                pair, pos.kind, pos.size, reason
+            );
         }
 
         let cur_price = self.cur_price(&pair)?;
@@ -261,12 +262,10 @@ impl PairStrategy {
         }
         match kind {
             PositionKind::Long => {
-                broker.exec_open(pair.0.as_str(), size as i32);
-                broker.exec_open(pair.1.as_str(), -(size as i32));
+                broker.exec_spread((&pair.0, &pair.1), size as i32, true);
             }
             PositionKind::Short => {
-                broker.exec_open(pair.0.as_str(), -(size as i32));
-                broker.exec_open(pair.1.as_str(), size as i32);
+                broker.exec_spread((&pair.0, &pair.1), -(size as i32), true);
             }
         }
         if self.params.debug {
@@ -361,7 +360,7 @@ impl PairStrategy {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap};
+    use std::collections::HashMap;
 
     use crate::engine::{AccountStatus, ContractData};
 
@@ -393,13 +392,7 @@ mod tests {
             }
         }
 
-        fn exec_open(&mut self, _: &str, _: i32) -> Option<i32> {
-            None
-        }
-
-        fn exec_close(&mut self, _: &str, _: i32) -> Option<i32> {
-            None
-        }
+        fn exec_spread(&mut self, _: (&str, &str), _: i32, _: bool) {}
     }
 
     fn mk_contract(name: &str, price: f32, volume: u32) -> ContractData {

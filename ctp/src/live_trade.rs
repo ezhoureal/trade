@@ -16,7 +16,8 @@ use crate::{
 };
 
 struct Order {
-    symbol: String,
+    leg1: String,
+    leg2: String,
     qty: i32,
     open: bool,
 }
@@ -164,7 +165,7 @@ impl LiveBroker {
                     println!("报单成功回报 Order Return: BrokerID: {}, InvestorID: {}, ExchangeID: {}, OrderRef: {}, OrderStatus: {}, InstrumentID: {}", 
                           broker_id, investor_id, exchange_id, order_ref, order_status, instrument_id);
                     if order_status == "已撤销" {
-                        break;
+                        return None;
                     }
                 }
                 OnRspOrderInsert(p) => {
@@ -174,8 +175,7 @@ impl LiveBroker {
                         rsp_info.ErrorID,
                         rsp_info.ErrorMsg.to_string(),
                     );
-
-                    break;
+                    return None;
                 }
                 OnRtnTrade(p) => {
                     let trade = p.trade.unwrap();
@@ -205,22 +205,13 @@ impl LiveBroker {
 }
 
 impl Broker for LiveBroker {
-    fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+    fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) {
         self.pending_orders.push(Order {
-            symbol: symbol.to_string(),
+            leg1: pair.0.to_string(),
+            leg2: pair.1.to_string(),
             qty,
-            open: true,
+            open,
         });
-        Some(0)
-    }
-
-    fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        self.pending_orders.push(Order {
-            symbol: symbol.to_string(),
-            qty,
-            open: false,
-        });
-        Some(0)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -340,7 +331,16 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         );
         let orders = std::mem::take(&mut broker.pending_orders);
         for order in orders.iter() {
-            broker.submit_order(&order.symbol, order.qty, order.open).await;
+            let res = broker
+                .submit_order(&order.leg1, order.qty, order.open)
+                .await;
+            if None == res {
+                println!("order leg1 failed, skip leg2");
+                continue;
+            }
+            broker
+                .submit_order(&order.leg2, -order.qty, order.open)
+                .await;
         }
         thread::sleep(Duration::from_secs(10));
     }

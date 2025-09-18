@@ -95,7 +95,6 @@ impl PairStrategy {
             .expect("Failed to write positions to file");
     }
 
-    #[cfg(feature = "live")]
     fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
         use polars::prelude::SortMultipleOptions;
 
