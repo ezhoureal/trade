@@ -201,7 +201,6 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
             }
         }
     }
-    println!("td login successful");
 
     LiveBroker {
         request_id: 0,

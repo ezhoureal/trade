@@ -1,5 +1,6 @@
+mod live_strategy;
+
 use anyhow::Result;
-use polars::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 
@@ -7,6 +8,7 @@ use crate::{
     engine::{Broker, ContractData, ContractsToday, PositionKind},
     params::Params,
 };
+
 #[derive(Debug, Serialize)]
 pub struct TradeLogEntry {
     pub pair: String,
@@ -51,22 +53,6 @@ impl PairStrategy {
             bar_count: 0,
             trade_log: Vec::new(),
         }
-    }
-
-    #[cfg(feature = "live")]
-    pub fn new_live(params: Params, df: LazyFrame) -> Self {
-        let mut strategy = PairStrategy {
-            params,
-            spread_histories: HashMap::new(),
-            active_positions: HashMap::new(),
-            contract_expiry: HashMap::new(),
-            bar_count: 0,
-            trade_log: Vec::new(),
-        };
-        strategy
-            .load_spread_history(df)
-            .expect("Failed to load spread history");
-        strategy
     }
 
     pub fn trade(
@@ -181,7 +167,7 @@ impl PairStrategy {
         Some((last - mean) / std)
     }
 
-    fn push_spread(&mut self, pair: (String, String), spread: f32) {
+    pub(crate) fn push_spread(&mut self, pair: (String, String), spread: f32) {
         let lookback = self.params.lookback_zscore;
         let entry = self
             .spread_histories
@@ -191,87 +177,6 @@ impl PairStrategy {
             entry.pop_front();
         }
         entry.push_back(spread);
-    }
-
-    #[cfg(feature = "live")]
-    pub fn pop_spread(&mut self) {
-        for (_, history) in self.spread_histories.iter_mut() {
-            history.pop_back();
-        }
-    }
-
-    #[cfg(feature = "live")]
-    fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
-        let sort_opts = SortMultipleOptions {
-            descending: vec![false],
-            maintain_order: false,
-            nulls_last: vec![false],
-            multithreaded: true,
-            limit: None,
-        };
-        let sorted = df.sort_by_exprs(vec![col("Date")], sort_opts).collect()?;
-        let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
-        let contracts_s = sorted.column("Contract")?.str()?;
-        let prices_f = sorted.column("Price")?.f64()?;
-        let date_col = sorted.column("Date")?;
-        let mut last_date: Option<AnyValue> = None;
-        let mut a_contracts: Vec<(String, f32)> = Vec::new();
-        let mut b_contracts: Vec<(String, f32)> = Vec::new();
-        for row in 0..sorted.height() {
-            let cur_date = date_col.get(row)?;
-            if let Some(ref ld) = last_date {
-                if &cur_date != ld {
-                    self.flush_day(&a_contracts, &b_contracts, same_prefix);
-                    a_contracts.clear();
-                    b_contracts.clear();
-                }
-            }
-            last_date = Some(cur_date);
-            if let Some(contract) = contracts_s.get(row) {
-                if let Some(price_v) = prices_f.get(row) {
-                    let price = price_v as f32;
-                    let c_l = contract.to_lowercase();
-                    if same_prefix {
-                        if c_l.starts_with(&self.params.commodity_a_prefix) {
-                            a_contracts.push((contract.to_string(), price));
-                        }
-                    } else {
-                        if c_l.starts_with(&self.params.commodity_a_prefix) {
-                            a_contracts.push((contract.to_string(), price));
-                        } else if c_l.starts_with(&self.params.commodity_b_prefix) {
-                            b_contracts.push((contract.to_string(), price));
-                        }
-                    }
-                }
-            }
-        }
-        self.flush_day(&a_contracts, &b_contracts, same_prefix);
-        Ok(())
-    }
-
-    fn flush_day(
-        &mut self,
-        a_contracts: &Vec<(String, f32)>,
-        b_contracts: &Vec<(String, f32)>,
-        same_prefix: bool,
-    ) {
-        if same_prefix {
-            for i in 0..a_contracts.len() {
-                for j in (i + 1)..a_contracts.len() {
-                    let (ref name_i, price_i) = a_contracts[i];
-                    let (ref name_j, price_j) = a_contracts[j];
-                    let spread = price_i - price_j;
-                    self.push_spread((name_i.clone(), name_j.clone()), spread);
-                }
-            }
-        } else {
-            for (name_a, price_a) in a_contracts.iter() {
-                for (name_b, price_b) in b_contracts.iter() {
-                    let spread = *price_a - *price_b;
-                    self.push_spread((name_a.clone(), name_b.clone()), spread);
-                }
-            }
-        }
     }
 
     fn close_reverted(&mut self, broker: &mut dyn Broker) -> Option<()> {
@@ -456,10 +361,7 @@ impl PairStrategy {
 
 #[cfg(test)]
 mod tests {
-    use polars::prelude::*;
-    use std::collections::{HashMap, HashSet};
-    use std::fs;
-    use std::path::PathBuf;
+    use std::collections::{HashMap};
 
     use crate::engine::{AccountStatus, ContractData};
 
@@ -471,8 +373,6 @@ mod tests {
     struct TestBroker {
         cash: f32,
         equity: f32,
-        // Record symbols we traded for simple sanity checks if needed.
-        traded: HashSet<String>,
     }
 
     impl TestBroker {
@@ -480,7 +380,6 @@ mod tests {
             Self {
                 cash: 100_000.0,
                 equity: 100_000.0,
-                traded: HashSet::new(),
             }
         }
     }
@@ -494,73 +393,12 @@ mod tests {
             }
         }
 
-        fn exec_open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        fn exec_open(&mut self, _: &str, _: i32) -> Option<i32> {
             None
         }
 
-        fn exec_close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        fn exec_close(&mut self, _: &str, _: i32) -> Option<i32> {
             None
-        }
-    }
-
-    fn base_params() -> Params {
-        Params {
-            lookback_zscore: 5,
-            entry_z: 1.5,
-            exit_z: 0.5,
-            expiry_close_days: 3,
-            debug: false,
-            commodity_a_prefix: "A".into(),
-            commodity_b_prefix: "B".into(),
-            transaction_cost_pct: 0.0,
-        }
-    }
-
-    #[test]
-    fn load_history_same_prefix_intra_pairs() {
-        // Both prefixes identical -> intra commodity pairing
-        let mut params = base_params();
-        params.commodity_a_prefix = "ag".into();
-        params.commodity_b_prefix = "ag".into();
-        // Build simple 2 days, 3 contracts per day -> expect 3 unique pair spreads per day (C(3,2)=3)
-        let df = df!(
-            "Date" => &["2025-08-06", "2025-08-06", "2025-08-06", "2025-08-07", "2025-08-07", "2025-08-07"],
-            "Contract" => &["ag2510", "ag2511", "ag2512", "ag2510", "ag2511", "ag2512"],
-            "Price" => &[9182.0_f64, 9191.0, 9205.0, 9185.0, 9190.0, 9210.0]
-        ).unwrap();
-        let strat_params = params.clone();
-        let mut strategy = PairStrategy::new(strat_params, HashMap::new());
-        strategy
-            .load_spread_history(df.lazy())
-            .expect("load history");
-        // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
-        assert_eq!(
-            strategy.spread_histories.len(),
-            3,
-            "should have 3 intra pairs"
-        );
-        for hist in strategy.spread_histories.values() {
-            assert_eq!(hist.len(), 2, "two days of spreads");
-        }
-    }
-
-    #[test]
-    fn load_history_cross_prefix_pairs() {
-        let mut params = base_params();
-        params.commodity_a_prefix = "ag".into();
-        params.commodity_b_prefix = "cu".into();
-        // 2 days, 2 AG contracts, 2 CU contracts each day -> 4 spreads per day (2x2)
-        let df = df!(
-            "Date" => &["2025-08-06","2025-08-06","2025-08-06","2025-08-06","2025-08-07","2025-08-07","2025-08-07","2025-08-07"],
-            "Contract" => &["ag2510","ag2511","cu2510","cu2511","ag2510","ag2511","cu2510","cu2511"],
-            "Price" => &[10.0_f64,11.0,20.0,21.0,11.0,12.0,19.0,22.0]
-        ).unwrap();
-        let mut strat = PairStrategy::new(params.clone(), HashMap::new());
-        strat.load_spread_history(df.lazy()).expect("load history");
-        // Expect 4 unique AGxCU pairs
-        assert_eq!(strat.spread_histories.len(), 4, "should have 4 cross pairs");
-        for hist in strat.spread_histories.values() {
-            assert_eq!(hist.len(), 2, "two days of spreads");
         }
     }
 
@@ -590,7 +428,7 @@ mod tests {
 
     #[test]
     fn enters_long_position_on_negative_extreme_z() {
-        let params = base_params();
+        let params = Params::default();
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
@@ -631,7 +469,7 @@ mod tests {
 
     #[test]
     fn reversion_closes_position() {
-        let params = base_params();
+        let params = Params::default();
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
@@ -673,7 +511,7 @@ mod tests {
 
     #[test]
     fn stop_loss_triggers_for_short_position() {
-        let mut params = base_params();
+        let mut params = Params::default();
         params.entry_z = 1.5; // ensure entry on positive outlier
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
@@ -718,7 +556,7 @@ mod tests {
 
     #[test]
     fn expiry_forces_close() {
-        let params = base_params();
+        let params = Params::default();
         // Expiry on day 10, close window 3 -> any bar with cur_day >= 7 triggers force close.
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 10);
@@ -750,7 +588,7 @@ mod tests {
     #[test]
     fn close_applies_transaction_costs() {
         // Params with non-zero transaction cost
-        let mut params = base_params();
+        let mut params = Params::default();
         params.transaction_cost_pct = 0.001; // 10 bps per leg
                                              // Ensure exit_z low enough to force exit after outlier reverts
         params.exit_z = 0.5;
