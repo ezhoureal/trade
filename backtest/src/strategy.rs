@@ -1,7 +1,7 @@
 mod live_strategy;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
@@ -24,7 +24,7 @@ pub struct TradeLogEntry {
     pub reason: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairPosition {
     kind: PositionKind,
     entry_z: f32,

@@ -6,7 +6,7 @@ use anyhow::Result;
 use polars::frame::DataFrame;
 use polars::prelude::*;
 use polars::series::ChunkCompareEq;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
@@ -51,7 +51,7 @@ fn build_expiry_date(df: &DataFrame) -> Result<HashMap<String, u32>> {
     Ok(expiry)
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum PositionKind {
     Long,
     Short,

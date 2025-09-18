@@ -5,7 +5,7 @@ use ctp2rs::{
     print_rsp_info,
     v1alpha1::{
         CThostFtdcDepthMarketDataField, CThostFtdcReqUserLoginField, CThostFtdcRspInfoField,
-        CThostFtdcRspUserLoginField, CThostFtdcSpecificInstrumentField, MdApi, MdSpi,
+        CThostFtdcRspUserLoginField, MdApi, MdSpi,
     },
 };
 

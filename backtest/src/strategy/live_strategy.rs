@@ -1,6 +1,17 @@
-use polars::prelude::*;
-use crate::params::Params;
 use super::PairStrategy;
+use crate::params::Params;
+use polars::prelude::*;
+use std::fs::File;
+use std::io::Read;
+
+// Helper type to persist active_positions where the key is a tuple (String, String).
+// JSON object keys must be strings, so we store as a Vec of records instead.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct SerializablePosition {
+    a: String,
+    b: String,
+    pos: super::PairPosition,
+}
 
 #[cfg(feature = "live")]
 impl PairStrategy {
@@ -18,9 +29,10 @@ impl PairStrategy {
         strategy
             .load_spread_history(df)
             .expect("Failed to load spread history");
+        strategy.load_positions().expect("Failed to load positions");
         strategy
     }
-    
+
     #[cfg(feature = "live")]
     pub fn pop_spread(&mut self) {
         for (_, history) in self.spread_histories.iter_mut() {
@@ -28,8 +40,43 @@ impl PairStrategy {
         }
     }
 
+    fn load_positions(&mut self) -> std::io::Result<()> {
+        let mut file = File::open("positions.json")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        if let Ok(list) = serde_json::from_str::<Vec<SerializablePosition>>(&contents) {
+            self.active_positions.clear();
+            for item in list {
+                self.active_positions.insert((item.a, item.b), item.pos);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn save_positions(&self) {
+        // Save current positions to a file as a Vec of records to avoid non-string map keys.
+        use std::fs::File;
+        use std::io::Write;
+
+        let list: Vec<SerializablePosition> = self
+            .active_positions
+            .iter()
+            .map(|((a, b), pos)| SerializablePosition {
+                a: a.clone(),
+                b: b.clone(),
+                pos: pos.clone(),
+            })
+            .collect();
+
+        let positions_json =
+            serde_json::to_string_pretty(&list).expect("Failed to serialize positions");
+        let mut file = File::create("positions.json").expect("Failed to create positions file");
+        file.write_all(positions_json.as_bytes())
+            .expect("Failed to write positions to file");
+    }
+
     #[cfg(feature = "live")]
-    pub(crate) fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
+    fn load_spread_history(&mut self, df: LazyFrame) -> PolarsResult<()> {
         use polars::prelude::SortMultipleOptions;
 
         let sort_opts = SortMultipleOptions {
@@ -108,6 +155,9 @@ impl PairStrategy {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::Read;
+    use std::io::Write;
 
     use super::*;
 
@@ -130,7 +180,6 @@ mod test {
             assert_eq!(hist.len(), 2, "two days of spreads");
         }
     }
-
 
     #[test]
     fn load_history_same_prefix_intra_pairs() {
