@@ -45,20 +45,18 @@ impl LiveBroker {
         while let Some(spi_msg) = self.stream.next().await {
             match spi_msg {
                 TraderSpiEvent::OnRspQryInvestorPosition(event) => {
-                    if let Some(pos) = event.investor_position {
-                        if pos.PosiDirection as u8 == THOST_FTDC_PD_Long {
-                            pos_net += pos.Position as i32;
-                        } else if pos.PosiDirection as u8 == THOST_FTDC_PD_Short {
-                            pos_net -= pos.Position as i32;
-                        }
-                        println!(
+                    let pos = event.investor_position?;
+                    if pos.PosiDirection as u8 == THOST_FTDC_PD_Long {
+                        pos_net += pos.Position as i32;
+                    } else if pos.PosiDirection as u8 == THOST_FTDC_PD_Short {
+                        pos_net -= pos.Position as i32;
+                    }
+                    println!(
                             "OnRspQryInvestorPosition: contract = {}, position {}, margin = {}, direction = {}", pos.InstrumentID.to_string(),
                             pos.Position, pos.UseMargin, pos.PosiDirection
                         );
-                    }
                     if event.is_last {
-                        self.positions
-                            .insert(contract.name.clone(), pos_net);
+                        self.positions.insert(contract.name.clone(), pos_net);
                         break;
                     }
                 }
@@ -103,11 +101,13 @@ impl LiveBroker {
         let mut order = CThostFtdcInputOrderField::default();
         order.InvestorID.assign_from_str(&self.config.td_user_id);
         order.UserID.assign_from_str(&self.config.td_user_id);
+        order.BrokerID.assign_from_str(&self.broker_id);
+        order.ExchangeID.assign_from_str("SHFE");
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
         order.OrderPriceType = THOST_FTDC_OPT_BestPrice as i8;
-        order.TimeCondition = THOST_FTDC_TC_GFD as i8; // Good for Day
-        order.VolumeCondition = THOST_FTDC_VC_MV as i8; // Complete volume
+        order.TimeCondition = THOST_FTDC_TC_IOC as i8;
+        order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty;
         order.Direction = if qty > 0 {
             THOST_FTDC_D_Buy as i8
@@ -129,7 +129,6 @@ impl LiveBroker {
         );
         let mut order = self.order_default(symbol, qty);
         order.LimitPrice = price as f64;
-        order.TimeCondition = THOST_FTDC_TC_GFD as i8; // Good for Day
         order.CombOffsetFlag[0] = if open {
             THOST_FTDC_OF_Open as i8
         } else {
@@ -164,6 +163,9 @@ impl LiveBroker {
 
                     println!("报单成功回报 Order Return: BrokerID: {}, InvestorID: {}, ExchangeID: {}, OrderRef: {}, OrderStatus: {}, InstrumentID: {}", 
                           broker_id, investor_id, exchange_id, order_ref, order_status, instrument_id);
+                    if order_status == "已撤销" {
+                        break;
+                    }
                 }
                 OnRspOrderInsert(p) => {
                     let rsp_info = p.rsp_info.unwrap();
@@ -193,7 +195,6 @@ impl LiveBroker {
                     // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
                     break;
                 }
-
                 _ => {
                     println!("其它回报");
                 }
@@ -321,17 +322,6 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
 
         broker.sync(&contracts.clone()).await;
 
-        let positions_to_close: Vec<(String, i32)> = broker
-            .positions
-            .iter()
-            .filter(|(symbol, qty)| **qty != 0)
-            .map(|(symbol, qty)| (symbol.clone(), *qty))
-            .collect();
-
-        for (symbol, qty) in positions_to_close {
-            broker.submit_order(&symbol, -qty, false).await;
-        }
-
         let local_positions = strategy.flatten_positions();
         if broker.positions != local_positions {
             println!(
@@ -350,9 +340,7 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         );
         let orders = std::mem::take(&mut broker.pending_orders);
         for order in orders.iter() {
-            broker
-                .submit_order(&order.symbol, order.qty, order.open)
-                .await;
+            broker.submit_order(&order.symbol, order.qty, order.open).await;
         }
         thread::sleep(Duration::from_secs(10));
     }
