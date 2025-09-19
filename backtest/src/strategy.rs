@@ -66,6 +66,9 @@ impl PairStrategy {
         // Build / update spread histories for all observed pairs today.
         for contr_a in a.iter() {
             for contr_b in b.iter() {
+                if contr_a.name >= contr_b.name {
+                    continue; // avoid duplicate pairs
+                }
                 let spread = contr_a.price - contr_b.price;
                 self.push_spread((contr_a.name.clone(), contr_b.name.clone()), spread);
             }
@@ -170,12 +173,12 @@ impl PairStrategy {
         Some((last - mean) / std)
     }
 
-    pub(crate) fn push_spread(&mut self, pair: (String, String), spread: f32) {
+    fn push_spread(&mut self, pair: (String, String), spread: f32) {
         let lookback = self.params.lookback_zscore;
         let entry = self
-            .spread_histories
-            .entry(pair)
-            .or_insert_with(|| VecDeque::with_capacity(lookback));
+        .spread_histories
+        .entry(pair)
+        .or_insert_with(|| VecDeque::with_capacity(lookback));
         if entry.len() == lookback {
             entry.pop_front();
         }

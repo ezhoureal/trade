@@ -31,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser()
 	p.add_argument("--commodity", required=True, help="Commodity prefix, e.g. ag")
 	p.add_argument(
-		"--days", "--look-back-period", dest="days", type=int, default=50, help="Look back trading days"
+		"--days", "--look-back-period", dest="days", type=int, default=30, help="Look back trading days"
 	)
 	p.add_argument("--out", type=Path, required=True, help="Output parquet path")
 	p.add_argument(

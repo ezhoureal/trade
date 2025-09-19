@@ -16,13 +16,6 @@ use crate::{
     TdAccountConfig,
 };
 
-struct Order {
-    leg1: String,
-    leg2: String,
-    qty: i32,
-    open: bool,
-}
-
 struct LiveBroker {
     api: TraderApi,
     stream: &'static mut TraderSpiStream,
@@ -37,9 +30,10 @@ struct LiveBroker {
 impl LiveBroker {
     async fn sync_position(&mut self, contract: &ContractData) -> Option<()> {
         self.request_id += 1;
+        let instrument = contract.name.clone();
         let mut qry = CThostFtdcQryInvestorPositionField::default();
         qry.InvestorID.assign_from_str(&self.config.td_user_id);
-        qry.InstrumentID.assign_from_str(contract.name.as_str());
+        qry.InstrumentID.assign_from_str(&instrument);
         self.api
             .req_qry_investor_position(&mut qry, self.request_id);
 
@@ -58,7 +52,15 @@ impl LiveBroker {
                             pos.Position, pos.UseMargin, pos.PosiDirection
                         );
                     if event.is_last {
-                        self.positions.insert(contract.name.clone(), pos_net);
+                        if self.positions.contains_key(&instrument)
+                            && self.positions[&instrument] != pos_net
+                        {
+                            println!(
+                                "warning: position mismatch for {}, local = {}, exchange = {}",
+                                instrument, self.positions[&instrument], pos_net
+                            );
+                        }
+                        self.positions.insert(instrument.clone(), pos_net);
                         break;
                     }
                 }
@@ -86,6 +88,7 @@ impl LiveBroker {
                     acc.Balance, acc.Available, acc.CurrMargin
                 );
                 self.cash = acc.Available as f32;
+                self.margin = acc.CurrMargin as f32;
             } else if let Some(err) = event.rsp_info {
                 println!(
                     "OnRspQryTradingAccount: error message = {:?}",
@@ -122,7 +125,7 @@ impl LiveBroker {
         order
     }
 
-    async fn submit_order(&mut self, symbol: &str, qty: i32, open: bool) -> Option<()> {
+    async fn submit_order(&mut self, symbol: &str, qty: i32, open: bool) -> Option<i32> {
         let price = get_last_price(symbol)?;
         println!(
             "placed order: {:?}, qty = {}, open = {}, cost = {}, cash = {}",
@@ -197,22 +200,40 @@ impl LiveBroker {
                           order_ref, broker_id, investor_id, exchange_id, trade_id, instrument_id, price, volume);
 
                     // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
-                    break;
+                    return Some(volume);
                 }
                 _ => {
                     println!("其它回报");
                 }
             }
         }
-        Some(())
+        Some(0)
     }
 }
 
 #[async_trait]
 impl Broker for LiveBroker {
-    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
-        self.submit_order(pair.0, qty, open).await;
-        self.submit_order(pair.1, -qty, open).await;
+    async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
+        qty = self.submit_order(pair.0, qty, open).await?;
+        if qty == 0 {
+            return None;
+        }
+        self.positions
+            .entry(pair.0.to_string())
+            .and_modify(|e| *e += qty)
+            .or_insert(qty);
+        let qty2 = self.submit_order(pair.1, -qty, open).await?;
+        if qty2 != qty {
+            println!(
+                "warning: filled qty not match for spread legs: {}, {}",
+                qty, qty2
+            );
+            // maybe attempt to revert first order?
+        }
+        self.positions
+            .entry(pair.1.to_string())
+            .and_modify(|e| *e -= qty)
+            .or_insert(-qty);
         Some(qty.abs() as u32)
     }
 

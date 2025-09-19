@@ -40,7 +40,7 @@ pub struct TdAccountConfig {
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// 选择运行环境
-    #[arg(short, long, value_enum, default_value_t = Environment::Tts)]
+    #[arg(short, long, value_enum, default_value_t = Environment::Sim)]
     environment: Environment,
 
     /// 用户ID
