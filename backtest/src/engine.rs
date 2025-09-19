@@ -8,6 +8,7 @@ use polars::prelude::*;
 use polars::series::ChunkCompareEq;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use async_trait::async_trait;
 
 #[derive(Debug, Serialize)]
 pub struct BackTestResult {
@@ -77,14 +78,16 @@ pub struct AccountStatus {
     pub gross_exposure: f32,
 }
 
+#[async_trait]
 pub trait Broker {
-    fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool);
+    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32>;
 
     fn get_status(&'_ self) -> AccountStatus;
 }
 
+#[async_trait]
 impl<'a> Broker for Engine<'a> {
-    fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) {
+    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
         let (a, b) = pair;
         if open {
             self.trade(a, qty);
@@ -93,6 +96,7 @@ impl<'a> Broker for Engine<'a> {
             self.trade(a, -qty);
             self.trade(b, qty);
         }
+        Some(qty.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {

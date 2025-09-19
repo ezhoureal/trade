@@ -56,23 +56,6 @@ impl PairStrategy {
         Ok(())
     }
 
-    pub fn flatten_positions(&self) -> HashMap<String, i32>{
-        let mut flat: HashMap<String, i32> = HashMap::new();
-        for ((a, b), pos) in self.active_positions.iter() {
-            match pos.kind {
-                super::PositionKind::Long => {
-                    *flat.entry(a.clone()).or_insert(0) += pos.size as i32;
-                    *flat.entry(b.clone()).or_insert(0) -= pos.size as i32;
-                }
-                super::PositionKind::Short => {
-                    *flat.entry(a.clone()).or_insert(0) -= pos.size as i32;
-                    *flat.entry(b.clone()).or_insert(0) += pos.size as i32;
-                }
-            }
-        }
-        flat
-    }
-
     pub fn save_positions(&self) {
         // Save current positions to a file as a Vec of records to avoid non-string map keys.
         use std::fs::File;

@@ -14,6 +14,9 @@ anyhow = "1"
 ahash = "0.8"
 rayon = "1.10"
 polars = { version = "0.49.0", features = ["lazy", "parquet", "strings"] }
+futures = "0.3.31"
+async-trait = "0.1.89"
+tokio = "1.47.1"
 
 [features]
 live = []

@@ -64,7 +64,7 @@ fn create_config_for_environment(
         Environment::Sim => {
             // 仿真环境配置
             #[cfg(target_os = "macos")]
-            let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.2/v6.7.2_MacOS_20231016/thostmduserapi_se.framework/thostmduserapi_se");
+            let md_dynlib_path = base_path.join("api/v6.7.2_MacOS_20231016/thostmduserapi_se.framework/thostmduserapi_se");
             #[cfg(all(target_os = "linux", not(feature = "ctp_v6_7_11")))]
             let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.2/v6.7.2_20230913_api_traderapi_se_linux64/thostmduserapi_se.so");
             #[cfg(all(target_os = "linux", feature = "ctp_v6_7_11"))]
@@ -84,12 +84,12 @@ fn create_config_for_environment(
 
             (
                 MdAccountConfig {
-                    md_user_id: user_id.clone(),
+                    md_user_id: "247486".to_string(),
                     md_front_address: "tcp://182.254.243.31:30011".to_string(), // SimNow 仿真环境
                     md_dynlib_path,
                 },
                 TdAccountConfig {
-                    td_user_id: user_id,
+                    td_user_id: "14572".to_string(),
                     td_password: password,
                     td_app_id: "simnow_client_test".to_string(),
                     td_auth_code: "0000000000000000".to_string(),

@@ -105,18 +105,20 @@ impl PairStrategy {
         reason: &str,
         broker: &mut dyn Broker,
     ) -> Option<()> {
-        match pos.kind {
-            PositionKind::Long => {
-                broker.exec_spread((&pair.0, &pair.1), -(pos.size as i32), false);
-            }
-            PositionKind::Short => {
-                broker.exec_spread((&pair.0, &pair.1), pos.size as i32, false);
-            }
+        let executed_size = futures::executor::block_on(match pos.kind {
+            PositionKind::Long => broker.exec_spread((&pair.0, &pair.1), -(pos.size as i32), false),
+            PositionKind::Short => broker.exec_spread((&pair.0, &pair.1), pos.size as i32, false),
+        })?;
+        if executed_size != pos.size {
+            eprintln!(
+                "Warning: attempted to close size {}, but executed {}",
+                pos.size, executed_size
+            );
         }
         if self.params.debug {
             println!(
                 "Closing {:?} {:?} size {} reason {}",
-                pair, pos.kind, pos.size, reason
+                pair, pos.kind, executed_size, reason
             );
         }
 
@@ -260,14 +262,10 @@ impl PairStrategy {
         if size <= 0 {
             return None;
         }
-        match kind {
-            PositionKind::Long => {
-                broker.exec_spread((&pair.0, &pair.1), size as i32, true);
-            }
-            PositionKind::Short => {
-                broker.exec_spread((&pair.0, &pair.1), -(size as i32), true);
-            }
-        }
+        size = futures::executor::block_on(match kind {
+            PositionKind::Long => broker.exec_spread((&pair.0, &pair.1), size as i32, true),
+            PositionKind::Short => broker.exec_spread((&pair.0, &pair.1), -(size as i32), true),
+        })?;
         if self.params.debug {
             println!("Entering {:?} {:?} size {} z={:.3}", pair, kind, size, z);
         }
@@ -360,11 +358,10 @@ impl PairStrategy {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use crate::engine::{AccountStatus, ContractData};
-
     use super::*;
+    use crate::engine::{AccountStatus, ContractData};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
 
     // Minimal mock broker implementing the Broker trait used by PairStrategy.
     // It keeps static cash/equity so sizing logic is deterministic and does not
@@ -383,6 +380,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Broker for TestBroker {
         fn get_status(&'_ self) -> AccountStatus {
             AccountStatus {
@@ -392,7 +390,9 @@ mod tests {
             }
         }
 
-        fn exec_spread(&mut self, _: (&str, &str), _: i32, _: bool) {}
+        async fn exec_spread(&mut self, _: (&str, &str), qty: i32, _: bool) -> Option<u32> {
+            Some(qty.abs() as u32) // assume full execution always
+        }
     }
 
     fn mk_contract(name: &str, price: f32, volume: u32) -> ContractData {

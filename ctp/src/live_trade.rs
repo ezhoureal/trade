@@ -2,6 +2,7 @@ use futures::StreamExt;
 use std::{any::Any, collections::HashMap, env, thread, time::Duration};
 
 use anyhow::Result;
+use async_trait::async_trait;
 use backtest::{
     engine::{AccountStatus, Broker, ContractData},
     strategy::PairStrategy,
@@ -27,9 +28,9 @@ struct LiveBroker {
     stream: &'static mut TraderSpiStream,
     request_id: i32,
     cash: f32,
-    positions: HashMap<String, i32>, // signed position size (+ long / - short)
+    margin: f32,
+    positions: HashMap<String, i32>,
     broker_id: String,
-    pending_orders: Vec<Order>,
     pub config: TdAccountConfig,
 }
 
@@ -106,10 +107,13 @@ impl LiveBroker {
         order.ExchangeID.assign_from_str("SHFE");
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
-        order.OrderPriceType = THOST_FTDC_OPT_BestPrice as i8;
+        order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
         order.TimeCondition = THOST_FTDC_TC_IOC as i8;
         order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty;
+        order
+            .OrderRef
+            .assign_from_str(self.request_id.to_string().as_str());
         order.Direction = if qty > 0 {
             THOST_FTDC_D_Buy as i8
         } else {
@@ -204,14 +208,12 @@ impl LiveBroker {
     }
 }
 
+#[async_trait]
 impl Broker for LiveBroker {
-    fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) {
-        self.pending_orders.push(Order {
-            leg1: pair.0.to_string(),
-            leg2: pair.1.to_string(),
-            qty,
-            open,
-        });
+    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
+        self.submit_order(pair.0, qty, open).await;
+        self.submit_order(pair.1, -qty, open).await;
+        Some(qty.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -295,8 +297,8 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
         api: tdapi,
         stream: resp_stream,
         cash: 0.0,
+        margin: 0.0,
         positions: HashMap::new(),
-        pending_orders: Vec::new(),
         broker_id: env::var("OPENCTP_USER_ID").unwrap_or("".into()),
     }
 }
@@ -313,35 +315,10 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
 
         broker.sync(&contracts.clone()).await;
 
-        let local_positions = strategy.flatten_positions();
-        if broker.positions != local_positions {
-            println!(
-                "warning, broker position = {}, strategy position = {}",
-                format!("{:?}", broker.positions),
-                format!("{:?}", local_positions)
-            );
-        }
+        // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
+        tokio::task::block_in_place(|| strategy.trade(0, contracts, b, &mut broker))?;
+        strategy.pop_spread(); // today's spread needs to be replaced
 
-        strategy.trade(0, contracts, b, &mut broker)?;
-        strategy.pop_spread();
-
-        println!(
-            "fulfil_orders: pending_orders={}",
-            broker.pending_orders.len()
-        );
-        let orders = std::mem::take(&mut broker.pending_orders);
-        for order in orders.iter() {
-            let res = broker
-                .submit_order(&order.leg1, order.qty, order.open)
-                .await;
-            if None == res {
-                println!("order leg1 failed, skip leg2");
-                continue;
-            }
-            broker
-                .submit_order(&order.leg2, -order.qty, order.open)
-                .await;
-        }
         thread::sleep(Duration::from_secs(10));
     }
     Ok(())

@@ -234,12 +234,15 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
+ "futures",
  "polars",
  "rayon",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -652,6 +655,7 @@ name = "ctp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "backtest",
  "chrono",
  "clap",

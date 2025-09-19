@@ -18,3 +18,5 @@ API/
 target/
 **/target/
 .DS_Store
+
+*.con
