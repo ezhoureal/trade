@@ -255,8 +255,9 @@ impl PairStrategy {
         }
         const LEVERAGE: f32 = 3.0;
         let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
-        let leg_prices = (contr_a.price.abs() + contr_b.price.abs()) * 2.0; // actual trade costs twice the amount of cash
-        let mut size: u32 = (safe_exposure.min(status.cash) / leg_prices).floor() as u32;
+        let leg_prices = contr_a.price.abs() + contr_b.price.abs();
+         // actual trade costs twice the amount of cash so / 2.0
+        let mut size: u32 = (safe_exposure.min(status.cash / 2.0) / leg_prices).floor() as u32 / 2;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
