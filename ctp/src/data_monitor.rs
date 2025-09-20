@@ -50,8 +50,7 @@ impl MdSpi for BaseMdSpi {
     ) {
         if let Some(q) = depth_market_data {
             let instrument = q.InstrumentID.to_string();
-            let last_price = q.LastPrice as f32;
-            update_quote(&instrument, last_price, q.Volume as u32);
+            update_quote(&instrument, q.AveragePrice as f32, q.Volume as u32);
             // println!(
             //     "on_rtn_depth_market_data {} last_price={} volume={}",
             //     instrument, last_price, q.Volume

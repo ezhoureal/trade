@@ -420,6 +420,7 @@ mod tests {
             engine.available < starting_cash - 500.0,
             "Cash should decrease by price*qty*volume_multiple*margin_ratio"
         );
+        assert!(engine.balance == starting_cash); // no transaction cost
         assert_eq!(engine.open_positions.len(), 1);
 
         // Close position

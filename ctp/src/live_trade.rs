@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use backtest::{
     engine::{AccountStatus, Broker, ContractData},
-    strategy::PairStrategy,
+    strategy::{PairStrategy, MARGIN_RATIO, VOLUME_MULTIPLE},
 };
 use ctp2rs::ffi::{AssignFromString, WrapToString};
 use ctp2rs::v1alpha1::TraderSpiEvent::*;
@@ -16,13 +16,19 @@ use crate::{
     TdAccountConfig,
 };
 
+struct Position {
+    long: u32,
+    short: u32,
+}
+
 struct LiveBroker {
     api: TraderApi,
     stream: &'static mut TraderSpiStream,
     request_id: i32,
     cash: f32,
     margin: f32,
-    positions: HashMap<String, i32>,
+    equity: f32,
+    positions: HashMap<String, Position>,
     broker_id: String,
     pub config: TdAccountConfig,
 }
@@ -37,30 +43,35 @@ impl LiveBroker {
         self.api
             .req_qry_investor_position(&mut qry, self.request_id);
 
-        let mut pos_net = 0;
+        let mut long_size = 0;
+        let mut short_size = 0;
         while let Some(spi_msg) = self.stream.next().await {
             match spi_msg {
                 TraderSpiEvent::OnRspQryInvestorPosition(event) => {
                     let pos = event.investor_position?;
+                    if pos.Position == 0 {
+                        if event.is_last {
+                            break;
+                        }
+                        continue;
+                    }
                     if pos.PosiDirection as u8 == THOST_FTDC_PD_Long {
-                        pos_net += pos.Position as i32;
+                        long_size += pos.Position as u32;
                     } else if pos.PosiDirection as u8 == THOST_FTDC_PD_Short {
-                        pos_net -= pos.Position as i32;
+                        short_size += pos.Position as u32;
                     }
                     println!(
                             "OnRspQryInvestorPosition: contract = {}, position {}, margin = {}, direction = {}", pos.InstrumentID.to_string(),
                             pos.Position, pos.UseMargin, pos.PosiDirection
                         );
                     if event.is_last {
-                        if self.positions.contains_key(&instrument)
-                            && self.positions[&instrument] != pos_net
-                        {
-                            println!(
-                                "warning: position mismatch for {}, local = {}, exchange = {}",
-                                instrument, self.positions[&instrument], pos_net
-                            );
-                        }
-                        self.positions.insert(instrument.clone(), pos_net);
+                        self.positions.insert(
+                            instrument.clone(),
+                            Position {
+                                long: long_size,
+                                short: short_size,
+                            },
+                        );
                         break;
                     }
                 }
@@ -89,6 +100,7 @@ impl LiveBroker {
                 );
                 self.cash = acc.Available as f32;
                 self.margin = acc.CurrMargin as f32;
+                self.equity = acc.Balance as f32;
             } else if let Some(err) = event.rsp_info {
                 println!(
                     "OnRspQryTradingAccount: error message = {:?}",
@@ -110,7 +122,7 @@ impl LiveBroker {
         order.ExchangeID.assign_from_str("SHFE");
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
-        order.OrderPriceType = THOST_FTDC_OPT_AnyPrice as i8;
+        order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
         order.TimeCondition = THOST_FTDC_TC_IOC as i8;
         order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty;
@@ -125,20 +137,20 @@ impl LiveBroker {
         order
     }
 
-    async fn submit_order(&mut self, symbol: &str, qty: i32, open: bool) -> Option<i32> {
+    async fn submit_order(&mut self, symbol: &str, qty: i32, is_open: bool) -> Option<i32> {
         let price = get_last_price(symbol)?;
         println!(
-            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cost = {}, cash = {}",
+            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, margin = {}, cash = {}",
             symbol,
             qty,
-            open,
+            is_open,
             price,
-            2.0 * price * qty as f32,
+            price * qty as f32 * MARGIN_RATIO * VOLUME_MULTIPLE as f32,
             self.cash
         );
         let mut order = self.order_default(symbol, qty);
         order.LimitPrice = price as f64;
-        order.CombOffsetFlag[0] = if open {
+        order.CombOffsetFlag[0] = if is_open {
             THOST_FTDC_OF_Open as i8
         } else {
             THOST_FTDC_OF_CloseYesterday as i8
@@ -209,6 +221,42 @@ impl LiveBroker {
         }
         Some(0)
     }
+
+    #[allow(dead_code)]
+    async fn query_commission(&mut self, instrument: &str) {
+        let mut qry = CThostFtdcQryInstrumentCommissionRateField::default();
+        qry.InvestorID.assign_from_str(&self.config.td_user_id);
+        qry.InstrumentID.assign_from_str(&instrument);
+        self.api
+            .req_qry_instrument_commission_rate(&mut qry, self.request_id);
+        while let Some(spi_msg) = self.stream.next().await {
+            match spi_msg {
+                TraderSpiEvent::OnRspQryInstrumentCommissionRate(event) => {
+                    if let Some(rate) = event.instrument_commission_rate {
+                        println!(
+                            "OnRspQryInstrumentCommissionRate: contract = {}, open_ratio = {}, close_ratio = {}, close_yesterday_ratio = {}",
+                            rate.InstrumentID.to_string(),
+                            rate.OpenRatioByMoney, rate.CloseRatioByMoney, rate.CloseTodayRatioByMoney
+                        );
+                    } else if let Some(err) = event.rsp_info {
+                        println!(
+                            "OnRspQryInstrumentCommissionRate: error message = {:?}",
+                            err.ErrorMsg.to_string()
+                        );
+                    }
+                    if event.is_last {
+                        break;
+                    }
+                }
+                _ => {
+                    println!(
+                        "unexpected event while syncing commission rate: {:?}",
+                        spi_msg.type_id()
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -219,10 +267,6 @@ impl Broker for LiveBroker {
         if qty == 0 {
             return None;
         }
-        self.positions
-            .entry(pair.1.to_string())
-            .and_modify(|e| *e += qty)
-            .or_insert(qty);
 
         let qty2 = self.submit_order(pair.0, -qty, open).await?;
         if qty2 != qty {
@@ -232,31 +276,20 @@ impl Broker for LiveBroker {
             );
             // maybe attempt to revert first order?
         }
-        self.positions
-            .entry(pair.0.to_string())
-            .and_modify(|e| *e -= qty)
-            .or_insert(-qty);
         Some(qty.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
-        // Mark-to-market valuation using latest prices; unknown prices treated as zero.
-        let mut position_value: f32 = 0.0;
-        for (sym, size) in self.positions.iter() {
-            if let Some(p) = get_last_price(sym) {
-                position_value += p * *size as f32;
-            }
-        }
         // Gross exposure: sum |position| * price
         let mut gross_exposure: f32 = 0.0;
-        for (sym, size) in self.positions.iter() {
+        for (sym, pos) in self.positions.iter() {
             if let Some(p) = get_last_price(sym) {
-                gross_exposure += p * size.abs() as f32;
+                gross_exposure += p * (pos.long + pos.short) as f32;
             }
         }
         AccountStatus {
             cash: self.cash,
-            equity: self.cash + position_value,
+            equity: self.equity,
             gross_exposure,
         }
     }
@@ -321,6 +354,7 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
         stream: resp_stream,
         cash: 0.0,
         margin: 0.0,
+        equity: 0.0,
         positions: HashMap::new(),
         broker_id: env::var("OPENCTP_USER_ID").unwrap_or("".into()),
     }
