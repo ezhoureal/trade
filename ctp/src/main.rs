@@ -4,7 +4,6 @@ use polars::prelude::*;
 use std::{path::PathBuf, thread};
 
 mod data_monitor;
-mod helper;
 mod live_trade;
 mod market_data;
 
@@ -168,7 +167,7 @@ fn main() -> PolarsResult<()> {
             debug: true,
             commodity_a_prefix: "ag".into(),
             commodity_b_prefix: "ag".into(),
-            transaction_cost_pct: 0.0001,
+            transaction_cost_pct: 0.00005,
         },
         df,
     );
