@@ -88,14 +88,8 @@ pub trait Broker {
 #[async_trait]
 impl<'a> Broker for Engine<'a> {
     async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
-        let (a, b) = pair;
-        if open {
-            self.trade(a, qty);
-            self.trade(b, -qty);
-        } else {
-            self.trade(a, -qty);
-            self.trade(b, qty);
-        }
+        self.trade(pair.0, qty);
+        self.trade(pair.1, -qty);
         Some(qty.abs() as u32)
     }
 
