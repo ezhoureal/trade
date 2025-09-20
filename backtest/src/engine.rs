@@ -1,14 +1,14 @@
 use crate::data::{filter_contract_by_prefix, load_market_data, normalize_date_to_bar};
 use crate::params::Params;
-use crate::strategy::{PairStrategy, TradeLogEntry};
+use crate::strategy::{PairStrategy, TradeLogEntry, MARGIN_RATIO, VOLUME_MULTIPLE};
 // use crate::strategy::*;
 use anyhow::Result;
+use async_trait::async_trait;
 use polars::frame::DataFrame;
 use polars::prelude::*;
 use polars::series::ChunkCompareEq;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use async_trait::async_trait;
 
 #[derive(Debug, Serialize)]
 pub struct BackTestResult {
@@ -31,8 +31,9 @@ pub struct Engine<'a> {
     current_price: HashMap<String, f32>,
     equity_curve: Vec<f32>,
     equity: f32,
-    cash: f32,
-    open_positions: HashMap<String, Position>,
+    available: f32,
+    balance: f32,
+    open_positions: HashMap<(String, bool), Position>,
     max_concurrent_positions: usize,
 }
 
@@ -61,7 +62,18 @@ pub enum PositionKind {
 #[allow(dead_code)]
 pub struct Position {
     pub entry_price: f32,
-    pub size: i32,
+    pub size: u32,
+    pub margin: f32,
+}
+
+impl Position {
+    pub fn default() -> Position {
+        Position {
+            entry_price: 0.0,
+            size: 0,
+            margin: 0.0,
+        }
+    }
 }
 
 pub type ContractsToday = Vec<ContractData>;
@@ -88,22 +100,27 @@ pub trait Broker {
 #[async_trait]
 impl<'a> Broker for Engine<'a> {
     async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
-        self.trade(pair.0, qty);
-        self.trade(pair.1, -qty);
+        if open {
+            self.open(pair.0, qty);
+            self.open(pair.1, -qty);
+        } else {
+            self.close(pair.0, qty);
+            self.close(pair.1, -qty);
+        }
         Some(qty.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
         AccountStatus {
-            cash: self.cash,
+            cash: self.available,
             equity: self.equity,
             gross_exposure: self
                 .open_positions
                 .iter()
-                .filter_map(|(symbol, pos)| {
+                .filter_map(|((symbol, _), pos)| {
                     self.current_price
                         .get(symbol)
-                        .map(|price| price * pos.size.abs() as f32)
+                        .map(|price| price * pos.size as f32 * VOLUME_MULTIPLE)
                 })
                 .sum(),
         }
@@ -117,38 +134,79 @@ impl<'a> Engine<'a> {
             params,
             equity_curve: Vec::new(),
             equity: STARTING_CASH,
-            cash: STARTING_CASH,
+            available: STARTING_CASH,
+            balance: STARTING_CASH,
             current_price: HashMap::new(),
             open_positions: HashMap::new(),
             max_concurrent_positions: 0,
         }
     }
 
-    fn trade(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        let cur_price = self.current_price.get(symbol)?;
-        self.cash -= cur_price * qty as f32;
-        let transaction_cost = cur_price * qty.abs() as f32 * self.params.transaction_cost_pct;
-        self.cash -= transaction_cost;
-        if self.cash < 0.0 {
-            println!("Warning: Cash balance negative after trade on {} qty {} at price {:.2}. balance = {:.2}", symbol, qty, cur_price, self.cash);
+    fn open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        let price = self.current_price.get(symbol)?;
+        let real_volume = qty as f32 * VOLUME_MULTIPLE;
+        if self.available < 0.0 {
+            println!("Warning: Cash balance negative after trade on {} qty {} at price {:.2}. balance = {:.2}", symbol, qty, price, self.available);
         }
+        let is_long = qty > 0;
+
         let pos = self
             .open_positions
-            .entry(symbol.to_string())
-            .or_insert(Position {
-                entry_price: *cur_price,
-                size: 0,
-            });
-        pos.size += qty;
-        let new_size = pos.size;
-        if new_size == 0 {
-            self.open_positions.remove(symbol);
-        }
+            .entry((symbol.to_string(), is_long))
+            .or_insert(Position::default());
+        let qty_abs = qty.abs() as u32;
+        let total_value = pos.entry_price * pos.size as f32 + price * qty_abs as f32;
+        pos.size += qty_abs;
+        pos.entry_price = total_value / pos.size as f32;
+
+        let margin = price * real_volume.abs() * MARGIN_RATIO;
+        pos.margin += margin;
+
+        let transaction_cost = price * real_volume.abs() * self.params.transaction_cost_pct;
+        self.available -= margin + transaction_cost;
+        self.balance -= transaction_cost;
 
         if self.open_positions.len() > self.max_concurrent_positions {
             self.max_concurrent_positions = self.open_positions.len();
         }
-        Some(new_size)
+        Some(qty)
+    }
+
+    fn close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
+        let price = self.current_price.get(symbol)?;
+        let is_long = qty < 0;
+        let key = (symbol.to_string(), is_long);
+        let pos = self.open_positions.get_mut(&key)?;
+        let qty_abs = qty.abs() as u32;
+        if qty_abs > pos.size {
+            println!(
+                "Warning: Attempt to close more than open position on {}. Open size {}, close qty {}",
+                symbol, pos.size, qty_abs
+            );
+            return None;
+        }
+        let real_volume = qty_abs as f32 * VOLUME_MULTIPLE;
+        let pnl = if is_long {
+            price - pos.entry_price
+        } else {
+            pos.entry_price - price
+        } * real_volume;
+
+        let margin = pos.margin * (qty_abs as f32 / pos.size as f32);
+        pos.margin -= margin;
+        if self.available < 0.0 {
+            println!("Warning: Cash balance negative after trade on {} qty {} at price {:.2}. balance = {:.2}", symbol, qty, price, self.available);
+        }
+
+        pos.size -= qty_abs;
+        if pos.size == 0 {
+            self.open_positions.remove(&key);
+        }
+
+        let transaction_cost = price * real_volume.abs() * self.params.transaction_cost_pct;
+        self.available += pnl + margin - transaction_cost;
+        self.balance += pnl - transaction_cost;
+        Some(qty)
     }
 
     fn prepare_data_today(
@@ -194,16 +252,20 @@ impl<'a> Engine<'a> {
     }
 
     fn update_equity(self: &mut Self) {
-        let position_value: f32 = self
+        let pnl: f32 = self
             .open_positions
             .iter()
-            .filter_map(|(symbol, pos)| {
+            .filter_map(|((symbol, is_long), pos)| {
                 self.current_price
                     .get(symbol)
-                    .map(|price| price * pos.size as f32)
+                    .map(|price| if *is_long {
+                        price - pos.entry_price
+                    } else {
+                        pos.entry_price - price
+                    } * pos.size as f32 * VOLUME_MULTIPLE)
             })
             .sum();
-        self.equity = self.cash + position_value;
+        self.equity = self.balance + pnl;
         self.equity_curve.push(self.equity);
     }
 
@@ -232,7 +294,7 @@ impl<'a> Engine<'a> {
                 println!(
                     "Day {}: cash {:.2}, equity {:.2}, open positions {}, max concurrent {}",
                     day,
-                    self.cash,
+                    self.available,
                     self.equity,
                     self.open_positions.len(),
                     self.max_concurrent_positions
@@ -350,25 +412,25 @@ mod tests {
         let params = test_params();
         let mut engine = Engine::new(&params);
         engine.current_price.insert("A1".into(), 50.0);
-        let starting_cash = engine.cash;
+        let starting_cash = engine.available;
         // Open long (positive qty)
-        let size_after_open = engine.trade("A1", 10).expect("trade should succeed");
-        assert_eq!(size_after_open, 10);
+        let size_opened = engine.open("A1", 10).expect("trade should succeed");
+        assert_eq!(size_opened, 10);
         assert!(
-            engine.cash < starting_cash - 499.9 && engine.cash > starting_cash - 500.1,
-            "Cash should decrease by price*qty"
+            engine.available < starting_cash - 500.0,
+            "Cash should decrease by price*qty*volume_multiple*margin_ratio"
         );
         assert_eq!(engine.open_positions.len(), 1);
 
         // Close position
-        let size_after_close = engine.trade("A1", -10).expect("close should succeed");
-        assert_eq!(size_after_close, 0);
+        let size_closed = engine.close("A1", -10).expect("close should succeed");
+        assert_eq!(size_closed, -10);
         assert!(
             engine.open_positions.is_empty(),
             "Position map should remove flat position"
         );
         assert!(
-            (engine.cash - starting_cash).abs() < 1e-4,
+            (engine.available - starting_cash).abs() < 1e-4,
             "Cash should round-trip after round trip trade"
         );
         assert_eq!(
@@ -382,21 +444,21 @@ mod tests {
         let params = test_params();
         let mut engine = Engine::new(&params);
         engine.current_price.insert("A1".into(), 25.0);
-        let starting_cash = engine.cash;
+        let starting_cash = engine.available;
         // Open short (negative qty first)
-        let size_after_open = engine.trade("A1", -8).expect("short trade ok");
+        let size_after_open = engine.open("A1", -8).expect("short trade ok");
         assert_eq!(size_after_open, -8);
         assert!(
-            engine.cash > starting_cash + 199.9 && engine.cash < starting_cash + 200.1,
-            "Cash should increase on short sale"
+            engine.available < starting_cash && (engine.balance - starting_cash).abs() < 1e-4,
+            "Available should decrease by margin, balance shouldn't change"
         );
         assert_eq!(engine.open_positions.len(), 1);
         // Cover
-        let size_after_close = engine.trade("A1", 8).expect("cover ok");
-        assert_eq!(size_after_close, 0);
+        let size_after_close = engine.close("A1", 8).expect("cover ok");
+        assert_eq!(size_after_close, 8);
         assert!(engine.open_positions.is_empty());
         assert!(
-            (engine.cash - starting_cash).abs() < 1e-4,
+            (engine.available - starting_cash).abs() < 1e-4,
             "Cash should return after short round trip"
         );
         assert_eq!(engine.max_concurrent_positions, 1);
@@ -408,12 +470,12 @@ mod tests {
         let mut engine = Engine::new(&params);
         engine.current_price.insert("A1".into(), 10.0);
         engine.current_price.insert("B1".into(), 20.0);
-        engine.trade("A1", 5).unwrap();
-        engine.trade("B1", 10).unwrap();
+        engine.open("A1", 5).unwrap();
+        engine.open("B1", 10).unwrap();
         assert_eq!(engine.open_positions.len(), 2);
         assert_eq!(engine.max_concurrent_positions, 2);
         // Close one
-        engine.trade("A1", -5).unwrap();
+        engine.close("A1", -5).unwrap();
         assert_eq!(engine.open_positions.len(), 1);
         assert_eq!(
             engine.max_concurrent_positions, 2,

@@ -9,6 +9,11 @@ use crate::{
     params::Params,
 };
 
+// based on ag
+pub static MARGIN_RATIO: f32 = 0.14;
+pub static VOLUME_MULTIPLE: f32 = 15.0;
+pub static TRANSACTION_COST: f32 = 0.00005;
+
 #[derive(Debug, Serialize)]
 pub struct TradeLogEntry {
     pub pair: String,
@@ -129,7 +134,7 @@ impl PairStrategy {
         let pnl = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
-        } * pos.size as f32
+        } * pos.size as f32 * VOLUME_MULTIPLE
             - self.params.transaction_cost_pct * pos.gross_notional * 2.0;
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
@@ -253,11 +258,9 @@ impl PairStrategy {
         if status.cash <= 0.0 {
             return None;
         }
-        const LEVERAGE: f32 = 3.0;
-        let safe_exposure = LEVERAGE * status.equity - status.gross_exposure;
-        let leg_prices = contr_a.price.abs() + contr_b.price.abs();
-         // actual trade costs twice the amount of cash so / 2.0
-        let mut size: u32 = (safe_exposure.min(status.cash / 2.0) / leg_prices).floor() as u32 / 2;
+        let leg_prices = (contr_a.price.abs() + contr_b.price.abs()) * VOLUME_MULTIPLE;
+        let cost = leg_prices * (MARGIN_RATIO + TRANSACTION_COST);
+        let mut size: u32 = (status.cash / cost).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
@@ -302,7 +305,10 @@ impl PairStrategy {
 
         for contr_a in a.iter() {
             for contr_b in b.iter() {
-                self.try_enter(contr_a, contr_b, broker);
+                if self.try_enter(contr_a, contr_b, broker).is_some() {
+                    // only one entry per call to then sync positions
+                    break;
+                }
             }
         }
         Some(())
@@ -346,7 +352,7 @@ impl PairStrategy {
                 PositionKind::Long => cur_price - pos.entry_spread,
                 PositionKind::Short => pos.entry_spread - cur_price,
             };
-            let pnl = trade_ret * pos.size as f32;
+            let pnl = trade_ret * pos.size as f32 * VOLUME_MULTIPLE;
 
             if pnl < LOSS_RATIO_THRESHOLD * pos.gross_notional {
                 to_close.push(pair.clone());
@@ -644,7 +650,7 @@ mod tests {
 
         // Expected gross PnL: (exit_spread - entry_spread) * size  (Long position)
         // entry_spread ≈ -3.0, exit_spread ≈ -1.0 => diff = 2.0
-        let expected_gross = (trade.exit_spread - entry_spread) * size; // 2.0 * size
+        let expected_gross = (trade.exit_spread - entry_spread) * size * VOLUME_MULTIPLE; // 2.0 * size
                                                                         // Costs: 2 * transaction_cost_pct * gross_notional
         let expected_costs = 2.0 * params.transaction_cost_pct * gross_notional;
         let expected_net = expected_gross - expected_costs;
