@@ -35,7 +35,7 @@ struct MultiPairAggregate {
 )]
 struct Cli {
     /// Path to parquet file or directory of parquet files
-    #[arg(long = "data", short = 'd', default_value = "../data")]
+    #[arg(long = "data", short = 'd', default_value = "../data/backtest")]
     data: String,
 
     /// Z-score lookback window
@@ -63,7 +63,7 @@ struct Cli {
     commodity_a: String,
 
     /// Commodity B prefix (e.g. fu) for single-run mode
-    #[arg(short = 'b', default_value = "au")]
+    #[arg(short = 'b', default_value = "ag")]
     commodity_b: String,
 
     /// Path to a text file containing commodity prefix pairs (one a:b per line; lines starting with # ignored)
