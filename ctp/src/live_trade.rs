@@ -84,8 +84,8 @@ impl LiveBroker {
         if let TraderSpiEvent::OnRspQryTradingAccount(event) = spi_msg {
             if let Some(acc) = event.trading_account {
                 println!(
-                    "OnRspQryTradingAccount: balance={} available={} margin={} ",
-                    acc.Balance, acc.Available, acc.CurrMargin
+                    "OnRspQryTradingAccount: balance={} available={} margin={}, commission = {}, frozen cash = {}, frozen margin = {}",
+                    acc.Balance, acc.Available, acc.CurrMargin, acc.Commission, acc.FrozenCash, acc.FrozenMargin
                 );
                 self.cash = acc.Available as f32;
                 self.margin = acc.CurrMargin as f32;
@@ -110,7 +110,7 @@ impl LiveBroker {
         order.ExchangeID.assign_from_str("SHFE");
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
-        order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
+        order.OrderPriceType = THOST_FTDC_OPT_AnyPrice as i8;
         order.TimeCondition = THOST_FTDC_TC_IOC as i8;
         order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty;
@@ -128,11 +128,12 @@ impl LiveBroker {
     async fn submit_order(&mut self, symbol: &str, qty: i32, open: bool) -> Option<i32> {
         let price = get_last_price(symbol)?;
         println!(
-            "placed order: {:?}, qty = {}, open = {}, cost = {}, cash = {}",
+            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cost = {}, cash = {}",
             symbol,
             qty,
             open,
-            price * qty as f32,
+            price,
+            2.0 * price * qty as f32,
             self.cash
         );
         let mut order = self.order_default(symbol, qty);
@@ -140,7 +141,7 @@ impl LiveBroker {
         order.CombOffsetFlag[0] = if open {
             THOST_FTDC_OF_Open as i8
         } else {
-            THOST_FTDC_OF_CloseToday as i8
+            THOST_FTDC_OF_CloseYesterday as i8
         };
 
         self.request_id += 1;
@@ -193,13 +194,12 @@ impl LiveBroker {
                     let trade_id = trade.TradeID.to_string();
                     let order_ref = trade.OrderRef.to_string();
                     let instrument_id = trade.InstrumentID.to_string();
-                    let price = trade.Price;
+                    let price = trade.Price as f32;
                     let volume = trade.Volume;
 
                     println!("成交回报 OnRtnTrade: OrderRef: {}, BrokerID: {}, InvestorID: {}, ExchangeID: {}, TradeID: {}, InstrumentID: {}, Price: {:.2}, Volume: {}",
                           order_ref, broker_id, investor_id, exchange_id, trade_id, instrument_id, price, volume);
-
-                    // 这里有个 break，之后这个 while match 不再接收信息。（推荐将 SPI 放到单独线程）
+                    self.cash -= 2.0 * price * volume as f32;
                     return Some(volume);
                 }
                 _ => {
@@ -214,15 +214,17 @@ impl LiveBroker {
 #[async_trait]
 impl Broker for LiveBroker {
     async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
-        qty = self.submit_order(pair.0, qty, open).await?;
+        // execute the less liquid leg first
+        qty = self.submit_order(pair.1, qty, open).await?;
         if qty == 0 {
             return None;
         }
         self.positions
-            .entry(pair.0.to_string())
+            .entry(pair.1.to_string())
             .and_modify(|e| *e += qty)
             .or_insert(qty);
-        let qty2 = self.submit_order(pair.1, -qty, open).await?;
+
+        let qty2 = self.submit_order(pair.0, -qty, open).await?;
         if qty2 != qty {
             println!(
                 "warning: filled qty not match for spread legs: {}, {}",
@@ -231,7 +233,7 @@ impl Broker for LiveBroker {
             // maybe attempt to revert first order?
         }
         self.positions
-            .entry(pair.1.to_string())
+            .entry(pair.0.to_string())
             .and_modify(|e| *e -= qty)
             .or_insert(-qty);
         Some(qty.abs() as u32)
@@ -328,16 +330,16 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
 pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Result<()> {
     let mut broker = init_api(config).await;
     thread::sleep(Duration::from_secs(1));
-    loop {
+    for _ in 0..100 {
         let contracts = snapshot_contracts();
         println!("td loop, snapshot has {} contracts", contracts.len());
-        let b = contracts.clone(); // intra-commodity pairs for now
-                                   // broker.update_positions();
-
+        // broker.update_positions();
         broker.sync(&contracts.clone()).await;
 
         // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
-        tokio::task::block_in_place(|| strategy.trade(0, contracts, b, &mut broker))?;
+        tokio::task::block_in_place(|| {
+            strategy.trade(0, contracts.clone(), contracts, &mut broker)
+        })?;
         strategy.pop_spread(); // today's spread needs to be replaced
 
         thread::sleep(Duration::from_secs(10));
