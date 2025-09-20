@@ -1,0 +1,470 @@
+{
+  "pairs": [
+    {
+      "commodity_a": "ag",
+      "commodity_b": "wr",
+      "total_return": 632546.5,
+      "sharpe_ratio": 0.9230629,
+      "win_rate": 0.6395349,
+      "total_trades": 86,
+      "max_drawdown": 201355.5
+    },
+    {
+      "commodity_a": "fu",
+      "commodity_b": "zn",
+      "total_return": 1796329.5,
+      "sharpe_ratio": 0.762956,
+      "win_rate": 0.74626863,
+      "total_trades": 67,
+      "max_drawdown": 2282905.0
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "au",
+      "total_return": 6818888.0,
+      "sharpe_ratio": 1.0478959,
+      "win_rate": 0.7058824,
+      "total_trades": 51,
+      "max_drawdown": 11909134.0
+    },
+    {
+      "commodity_a": "hc",
+      "commodity_b": "wr",
+      "total_return": 126029.375,
+      "sharpe_ratio": 0.39141276,
+      "win_rate": 0.78350514,
+      "total_trades": 97,
+      "max_drawdown": 105116.875
+    },
+    {
+      "commodity_a": "sn",
+      "commodity_b": "sn",
+      "total_return": 357234.25,
+      "sharpe_ratio": 0.85735005,
+      "win_rate": 0.8717949,
+      "total_trades": 78,
+      "max_drawdown": 218851.75
+    },
+    {
+      "commodity_a": "rb",
+      "commodity_b": "wr",
+      "total_return": 363619.38,
+      "sharpe_ratio": 0.8342603,
+      "win_rate": 0.8113208,
+      "total_trades": 106,
+      "max_drawdown": 82020.0
+    },
+    {
+      "commodity_a": "bu",
+      "commodity_b": "wr",
+      "total_return": 506634.75,
+      "sharpe_ratio": 0.9957944,
+      "win_rate": 0.6846847,
+      "total_trades": 111,
+      "max_drawdown": 92378.75
+    },
+    {
+      "commodity_a": "al",
+      "commodity_b": "ss",
+      "total_return": 481325.0,
+      "sharpe_ratio": 0.48481458,
+      "win_rate": 0.51724136,
+      "total_trades": 58,
+      "max_drawdown": 1642469.2
+    },
+    {
+      "commodity_a": "al",
+      "commodity_b": "al",
+      "total_return": 247718.12,
+      "sharpe_ratio": 0.8399167,
+      "win_rate": 0.78723407,
+      "total_trades": 94,
+      "max_drawdown": 98634.5
+    },
+    {
+      "commodity_a": "ao",
+      "commodity_b": "ao",
+      "total_return": 249967.88,
+      "sharpe_ratio": 0.5544024,
+      "win_rate": 0.7222222,
+      "total_trades": 54,
+      "max_drawdown": 324124.75
+    },
+    {
+      "commodity_a": "zn",
+      "commodity_b": "zn",
+      "total_return": 531614.75,
+      "sharpe_ratio": 1.4060558,
+      "win_rate": 0.84090906,
+      "total_trades": 88,
+      "max_drawdown": 87150.0
+    },
+    {
+      "commodity_a": "pb",
+      "commodity_b": "pb",
+      "total_return": 912796.75,
+      "sharpe_ratio": 2.0460336,
+      "win_rate": 0.93162394,
+      "total_trades": 117,
+      "max_drawdown": 185518.38
+    },
+    {
+      "commodity_a": "bu",
+      "commodity_b": "sp",
+      "total_return": 21966.125,
+      "sharpe_ratio": 0.3990746,
+      "win_rate": 0.7605634,
+      "total_trades": 71,
+      "max_drawdown": 2336833.8
+    },
+    {
+      "commodity_a": "pb",
+      "commodity_b": "ru",
+      "total_return": 697635.4,
+      "sharpe_ratio": 0.53211373,
+      "win_rate": 0.7058824,
+      "total_trades": 51,
+      "max_drawdown": 1907588.2
+    },
+    {
+      "commodity_a": "sp",
+      "commodity_b": "sp",
+      "total_return": 269569.88,
+      "sharpe_ratio": 0.37630352,
+      "win_rate": 0.8,
+      "total_trades": 110,
+      "max_drawdown": 817979.6
+    },
+    {
+      "commodity_a": "hc",
+      "commodity_b": "hc",
+      "total_return": 1529612.8,
+      "sharpe_ratio": 1.6886159,
+      "win_rate": 0.8580247,
+      "total_trades": 162,
+      "max_drawdown": 593876.5
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "pb",
+      "total_return": 13221869.0,
+      "sharpe_ratio": 1.5460333,
+      "win_rate": 0.8181818,
+      "total_trades": 66,
+      "max_drawdown": 4674495.0
+    },
+    {
+      "commodity_a": "bu",
+      "commodity_b": "bu",
+      "total_return": 827414.25,
+      "sharpe_ratio": 0.8440632,
+      "win_rate": 0.73049647,
+      "total_trades": 141,
+      "max_drawdown": 287524.12
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "ru",
+      "total_return": 1131236.8,
+      "sharpe_ratio": 0.65056753,
+      "win_rate": 0.7234042,
+      "total_trades": 47,
+      "max_drawdown": 1896980.0
+    },
+    {
+      "commodity_a": "al",
+      "commodity_b": "zn",
+      "total_return": 628584.4,
+      "sharpe_ratio": 0.5119273,
+      "win_rate": 0.6964286,
+      "total_trades": 56,
+      "max_drawdown": 959923.0
+    },
+    {
+      "commodity_a": "ru",
+      "commodity_b": "ru",
+      "total_return": 330745.0,
+      "sharpe_ratio": 0.65960294,
+      "win_rate": 0.8110236,
+      "total_trades": 127,
+      "max_drawdown": 285902.62
+    },
+    {
+      "commodity_a": "au",
+      "commodity_b": "pb",
+      "total_return": 1764071.2,
+      "sharpe_ratio": 0.73359376,
+      "win_rate": 0.73333335,
+      "total_trades": 60,
+      "max_drawdown": 7284797.0
+    },
+    {
+      "commodity_a": "fu",
+      "commodity_b": "pb",
+      "total_return": 2448841.8,
+      "sharpe_ratio": 0.83007324,
+      "win_rate": 0.6944444,
+      "total_trades": 72,
+      "max_drawdown": 4306816.0
+    },
+    {
+      "commodity_a": "bu",
+      "commodity_b": "pb",
+      "total_return": 1512662.2,
+      "sharpe_ratio": 0.70880884,
+      "win_rate": 0.7794118,
+      "total_trades": 68,
+      "max_drawdown": 3637268.0
+    },
+    {
+      "commodity_a": "sp",
+      "commodity_b": "wr",
+      "total_return": 765488.0,
+      "sharpe_ratio": 1.1691289,
+      "win_rate": 0.6944444,
+      "total_trades": 72,
+      "max_drawdown": 302443.25
+    },
+    {
+      "commodity_a": "hc",
+      "commodity_b": "sp",
+      "total_return": 445203.12,
+      "sharpe_ratio": 0.49548662,
+      "win_rate": 0.65217394,
+      "total_trades": 69,
+      "max_drawdown": 1318826.4
+    },
+    {
+      "commodity_a": "rb",
+      "commodity_b": "rb",
+      "total_return": 26205.188,
+      "sharpe_ratio": 0.14214908,
+      "win_rate": 0.7419355,
+      "total_trades": 93,
+      "max_drawdown": 886292.7
+    },
+    {
+      "commodity_a": "cu",
+      "commodity_b": "cu",
+      "total_return": 161329.0,
+      "sharpe_ratio": 0.8709617,
+      "win_rate": 0.7777778,
+      "total_trades": 90,
+      "max_drawdown": 113216.25
+    },
+    {
+      "commodity_a": "ni",
+      "commodity_b": "ni",
+      "total_return": 1130109.2,
+      "sharpe_ratio": 1.6602141,
+      "win_rate": 0.8494624,
+      "total_trades": 93,
+      "max_drawdown": 127016.0
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "al",
+      "total_return": 2686626.2,
+      "sharpe_ratio": 0.8514602,
+      "win_rate": 0.77272725,
+      "total_trades": 44,
+      "max_drawdown": 2276757.8
+    },
+    {
+      "commodity_a": "hc",
+      "commodity_b": "rb",
+      "total_return": 14268.6875,
+      "sharpe_ratio": 0.15747806,
+      "win_rate": 0.6354167,
+      "total_trades": 96,
+      "max_drawdown": 1130722.8
+    },
+    {
+      "commodity_a": "pb",
+      "commodity_b": "wr",
+      "total_return": 318151.5,
+      "sharpe_ratio": 0.62934,
+      "win_rate": 0.68085104,
+      "total_trades": 94,
+      "max_drawdown": 200171.5
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "bu",
+      "total_return": 983316.4,
+      "sharpe_ratio": 0.6279604,
+      "win_rate": 0.6122449,
+      "total_trades": 49,
+      "max_drawdown": 3085296.5
+    },
+    {
+      "commodity_a": "sp",
+      "commodity_b": "zn",
+      "total_return": 112244.125,
+      "sharpe_ratio": 0.49639133,
+      "win_rate": 0.7346939,
+      "total_trades": 49,
+      "max_drawdown": 1680351.8
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "zn",
+      "total_return": 3438971.0,
+      "sharpe_ratio": 0.90697753,
+      "win_rate": 0.74509805,
+      "total_trades": 51,
+      "max_drawdown": 1908395.2
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "ag",
+      "total_return": 347408.0,
+      "sharpe_ratio": 2.6099513,
+      "win_rate": 0.9268293,
+      "total_trades": 123,
+      "max_drawdown": 21645.0
+    },
+    {
+      "commodity_a": "al",
+      "commodity_b": "fu",
+      "total_return": 10556598.0,
+      "sharpe_ratio": 1.1810323,
+      "win_rate": 0.7413793,
+      "total_trades": 58,
+      "max_drawdown": 7216388.0
+    },
+    {
+      "commodity_a": "pb",
+      "commodity_b": "zn",
+      "total_return": 383728.5,
+      "sharpe_ratio": 0.4580747,
+      "win_rate": 0.6792453,
+      "total_trades": 53,
+      "max_drawdown": 1011719.5
+    },
+    {
+      "commodity_a": "ag",
+      "commodity_b": "fu",
+      "total_return": 153492.25,
+      "sharpe_ratio": 0.51363826,
+      "win_rate": 0.6764706,
+      "total_trades": 68,
+      "max_drawdown": 2609124.5
+    },
+    {
+      "commodity_a": "ss",
+      "commodity_b": "wr",
+      "total_return": 375404.38,
+      "sharpe_ratio": 0.5771204,
+      "win_rate": 0.58441556,
+      "total_trades": 77,
+      "max_drawdown": 141363.75
+    },
+    {
+      "commodity_a": "hc",
+      "commodity_b": "zn",
+      "total_return": 81907.5,
+      "sharpe_ratio": 0.47951183,
+      "win_rate": 0.6938776,
+      "total_trades": 49,
+      "max_drawdown": 1413423.5
+    },
+    {
+      "commodity_a": "bu",
+      "commodity_b": "cu",
+      "total_return": 1662593.0,
+      "sharpe_ratio": 0.73126596,
+      "win_rate": 0.7446808,
+      "total_trades": 47,
+      "max_drawdown": 9669967.0
+    }
+  ],
+  "ranked_by_sharpe": [
+    "ag:ag",
+    "pb:pb",
+    "hc:hc",
+    "ni:ni",
+    "ag:pb",
+    "zn:zn",
+    "al:fu",
+    "sp:wr",
+    "ag:au",
+    "bu:wr",
+    "ag:wr",
+    "ag:zn",
+    "cu:cu",
+    "sn:sn",
+    "ag:al",
+    "bu:bu",
+    "al:al",
+    "rb:wr",
+    "fu:pb",
+    "fu:zn",
+    "au:pb",
+    "bu:cu",
+    "bu:pb",
+    "ru:ru",
+    "ag:ru",
+    "pb:wr",
+    "ag:bu",
+    "ss:wr",
+    "ao:ao",
+    "pb:ru",
+    "ag:fu",
+    "al:zn",
+    "sp:zn",
+    "hc:sp",
+    "al:ss",
+    "hc:zn",
+    "pb:zn",
+    "bu:sp",
+    "hc:wr",
+    "sp:sp",
+    "hc:rb",
+    "rb:rb"
+  ],
+  "ranked_by_return": [
+    "ag:pb",
+    "al:fu",
+    "ag:au",
+    "ag:zn",
+    "ag:al",
+    "fu:pb",
+    "fu:zn",
+    "au:pb",
+    "bu:cu",
+    "hc:hc",
+    "bu:pb",
+    "ag:ru",
+    "ni:ni",
+    "ag:bu",
+    "pb:pb",
+    "bu:bu",
+    "sp:wr",
+    "pb:ru",
+    "ag:wr",
+    "al:zn",
+    "zn:zn",
+    "bu:wr",
+    "al:ss",
+    "hc:sp",
+    "pb:zn",
+    "ss:wr",
+    "rb:wr",
+    "sn:sn",
+    "ag:ag",
+    "ru:ru",
+    "pb:wr",
+    "sp:sp",
+    "ao:ao",
+    "al:al",
+    "cu:cu",
+    "ag:fu",
+    "hc:wr",
+    "sp:zn",
+    "hc:zn",
+    "rb:rb",
+    "bu:sp",
+    "hc:rb"
+  ]
+}
