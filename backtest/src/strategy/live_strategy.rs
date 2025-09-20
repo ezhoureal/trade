@@ -1,8 +1,6 @@
 use super::PairStrategy;
 use crate::params::Params;
 use polars::prelude::*;
-#[cfg(feature = "live")]
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
@@ -154,7 +152,7 @@ impl PairStrategy {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod test {
     use std::collections::HashMap;
     use std::fs::File;
