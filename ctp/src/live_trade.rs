@@ -284,33 +284,32 @@ impl LiveBroker {
             }
         }
     }
-
 }
 
-    fn determine_flag(open: bool, qty: i32, pos: &Position) -> Option<u8> {
-        let long = qty > 0;
-        let qty_abs = qty.abs() as u32;
-        if open {
-            Some(THOST_FTDC_OF_Open)
-        } else if long && pos.short_today >= qty_abs {
-            Some(THOST_FTDC_OF_CloseToday)
-        } else if long && pos.short_yd >= qty_abs {
-            Some(THOST_FTDC_OF_CloseYesterday)
-        } else if !long && pos.long_today >= qty_abs {
-            Some(THOST_FTDC_OF_CloseToday)
-        } else if !long && pos.long_yd >= qty_abs {
-            Some(THOST_FTDC_OF_CloseYesterday)
-        } else {
-            println!("no position to close for given qty {}", qty);
-            None // fallback to open
-        }
+fn determine_flag(open: bool, qty: i32, pos: &Position) -> Option<u8> {
+    let long = qty > 0;
+    let qty_abs = qty.abs() as u32;
+    if open {
+        Some(THOST_FTDC_OF_Open)
+    } else if long && pos.short_today >= qty_abs {
+        Some(THOST_FTDC_OF_CloseToday)
+    } else if long && pos.short_yd >= qty_abs {
+        Some(THOST_FTDC_OF_CloseYesterday)
+    } else if !long && pos.long_today >= qty_abs {
+        Some(THOST_FTDC_OF_CloseToday)
+    } else if !long && pos.long_yd >= qty_abs {
+        Some(THOST_FTDC_OF_CloseYesterday)
+    } else {
+        println!("no position to close for given qty {}", qty);
+        None // fallback to open
     }
+}
 
 #[async_trait]
 impl Broker for LiveBroker {
     async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
         // execute the less liquid leg first
-        let flag =  determine_flag(open, qty, &self.positions[pair.1])?;
+        let flag = determine_flag(open, qty, &self.positions[pair.1])?;
         qty = self.submit_order(pair.1, qty, flag).await?;
         if qty == 0 {
             return None;
@@ -428,4 +427,89 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         thread::sleep(Duration::from_secs(10));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(l_today: u32, l_yd: u32, s_today: u32, s_yd: u32) -> Position {
+        Position {
+            long_today: l_today,
+            long_yd: l_yd,
+            short_today: s_today,
+            short_yd: s_yd,
+        }
+    }
+
+    #[test]
+    fn test_open_returns_open() {
+        let p = pos(0, 0, 0, 0);
+        assert_eq!(determine_flag(true, 5, &p), Some(THOST_FTDC_OF_Open));
+        assert_eq!(determine_flag(true, -3, &p), Some(THOST_FTDC_OF_Open));
+    }
+
+    #[test]
+    fn test_close_short_prefers_today_then_yd() {
+        // buying qty>0 closes short side
+        let p_today = pos(0, 0, 4, 1);
+        assert_eq!(
+            determine_flag(false, 3, &p_today),
+            Some(THOST_FTDC_OF_CloseToday)
+        );
+
+        let p_yd = pos(0, 0, 0, 6);
+        assert_eq!(
+            determine_flag(false, 5, &p_yd),
+            Some(THOST_FTDC_OF_CloseYesterday)
+        );
+
+        let p_both = pos(0, 0, 2, 2);
+        // if qty fits in today, choose today
+        assert_eq!(
+            determine_flag(false, 2, &p_both),
+            Some(THOST_FTDC_OF_CloseToday)
+        );
+        // if qty doesn't fit in either bucket alone, return None (caller should split)
+        assert_eq!(determine_flag(false, 3, &p_both), None);
+    }
+
+    #[test]
+    fn test_close_long_prefers_today_then_yd() {
+        // selling qty<0 closes long side
+        let p_today = pos(5, 1, 0, 0);
+        assert_eq!(
+            determine_flag(false, -4, &p_today),
+            Some(THOST_FTDC_OF_CloseToday)
+        );
+
+        let p_yd = pos(0, 7, 0, 0);
+        assert_eq!(
+            determine_flag(false, -6, &p_yd),
+            Some(THOST_FTDC_OF_CloseYesterday)
+        );
+
+        let p_both = pos(2, 3, 0, 0);
+        // if qty fits in today, choose today
+        assert_eq!(
+            determine_flag(false, -2, &p_both),
+            Some(THOST_FTDC_OF_CloseToday)
+        );
+        // if qty doesn't fit in today but fits in yd, choose yd
+        assert_eq!(
+            determine_flag(false, -3, &p_both),
+            Some(THOST_FTDC_OF_CloseYesterday)
+        );
+    }
+
+    #[test]
+    fn test_insufficient_position_returns_none() {
+        // buy to close short, but no short positions
+        let p = pos(2, 3, 0, 0);
+        assert_eq!(determine_flag(false, 1, &p), None);
+
+        // sell to close long, but no long positions
+        let p2 = pos(0, 0, 4, 5);
+        assert_eq!(determine_flag(false, -1, &p2), None);
+    }
 }
