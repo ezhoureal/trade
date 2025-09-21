@@ -1,5 +1,6 @@
+use chrono::{NaiveDate, ParseResult};
 use futures::StreamExt;
-use std::{any::Any, collections::HashMap, env, mem, thread, time::Duration};
+use std::{any::Any, collections::HashMap, env, thread, time::Duration};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use ctp2rs::v1alpha1::TraderSpiEvent::*;
 use ctp2rs::v1alpha1::*;
 
 use crate::{
-    market_data::{get_price, snapshot_contracts},
+    market_data::{get_price, get_volume, snapshot_contracts},
     TdAccountConfig,
 };
 
@@ -28,6 +29,8 @@ struct LiveBroker {
     api: TraderApi,
     stream: &'static mut TraderSpiStream,
     request_id: i32,
+    date: NaiveDate,
+    instrument_expiry: HashMap<String, NaiveDate>,
     cash: f32,
     margin: f32,
     equity: f32,
@@ -98,9 +101,11 @@ impl LiveBroker {
         if let TraderSpiEvent::OnRspQryTradingAccount(event) = spi_msg {
             if let Some(acc) = event.trading_account {
                 println!(
-                    "OnRspQryTradingAccount: balance={} available={} margin={}, commission = {}, frozen cash = {}, frozen margin = {}",
-                    acc.Balance, acc.Available, acc.CurrMargin, acc.Commission, acc.FrozenCash, acc.FrozenMargin
+                    "OnRspQryTradingAccount: trading day = {}, balance={} available={} margin={}, commission = {}, frozen cash = {}, frozen margin = {}",
+                    acc.TradingDay.to_string(), acc.Balance, acc.Available, acc.CurrMargin, acc.Commission, acc.FrozenCash, acc.FrozenMargin
                 );
+                self.date =
+                    NaiveDate::parse_from_str(&acc.TradingDay.to_string(), "%Y%m%d").ok()?;
                 self.cash = acc.Available as f32;
                 self.margin = acc.CurrMargin as f32;
                 self.equity = acc.Balance as f32;
@@ -252,6 +257,42 @@ impl LiveBroker {
         Some(0)
     }
 
+    async fn query_expiry_date(&mut self, instrument: &str) -> ParseResult<()> {
+        let mut qry = CThostFtdcQryInstrumentField::default();
+        qry.InstrumentID.assign_from_str(&instrument);
+        self.api.req_qry_instrument(&mut qry, self.request_id);
+        while let Some(spi_msg) = self.stream.next().await {
+            match spi_msg {
+                TraderSpiEvent::OnRspQryInstrument(event) => {
+                    if let Some(inst) = event.instrument {
+                        println!(
+                            "OnRspQryInstrument: contract = {}, expire date = {}, price_tick = {}, volume_multiple = {}, exchange = {}",
+                            inst.InstrumentID.to_string(),
+                            inst.ExpireDate.to_string(),
+                            inst.PriceTick,
+                            inst.VolumeMultiple,
+                            inst.ExchangeID.to_string()
+                        );
+                        self.instrument_expiry.insert(
+                            instrument.to_string(),
+                            NaiveDate::parse_from_str(&inst.ExpireDate.to_string(), "%Y%m%d")?,
+                        );
+                    }
+                    if event.is_last {
+                        break;
+                    }
+                }
+                _ => {
+                    println!(
+                        "unexpected event while syncing instrument: {:?}",
+                        spi_msg.type_id()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
     async fn query_commission(&mut self, instrument: &str) {
         let mut qry = CThostFtdcQryInstrumentCommissionRateField::default();
@@ -310,16 +351,24 @@ fn determine_flag(open: bool, qty: i32, pos: &Position) -> Option<u8> {
 
 #[async_trait]
 impl Broker for LiveBroker {
-    async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
-        // execute the less liquid leg first
-        let flag = determine_flag(open, qty, &self.positions[pair.1])?;
-        qty = self.submit_order(pair.1, -qty, flag).await?;
+    async fn exec_spread(
+        &mut self,
+        pair: (String, String),
+        mut qty: i32,
+        open: bool,
+    ) -> Option<u32> {
+        // execute the less liquid leg
+        if get_volume(&pair.0)? > get_volume(&pair.1)? {
+            return self.exec_spread((pair.1, pair.0), -qty, open).await;
+        }
+        let flag = determine_flag(open, qty, &self.positions[&pair.1])?;
+        qty = self.submit_order(&pair.0, qty, flag).await?;
         if qty == 0 {
             return None;
         }
 
         // only need to determine flag once, since flags always match for both legs
-        let qty2 = self.submit_order(pair.0, qty, flag).await?;
+        let qty2 = self.submit_order(&pair.1, -qty, flag).await?;
         if qty2 != qty {
             println!(
                 "warning: filled qty not match for spread legs: {}, {}",
@@ -406,6 +455,8 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
         cash: 0.0,
         margin: 0.0,
         equity: 0.0,
+        date: NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+        instrument_expiry: HashMap::new(),
         positions: HashMap::new(),
         broker_id: env::var("OPENCTP_USER_ID").unwrap_or("".into()),
     }
@@ -452,21 +503,25 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         return Ok(());
     }
 
-    loop {
-        let contracts = snapshot_contracts();
-        println!("td loop, snapshot has {} contracts", contracts.len());
-        broker.sync(&contracts).await;
+    let contracts = snapshot_contracts();
+    broker.sync(&contracts).await;
+    for contract in contracts.iter() {
+        broker.query_expiry_date(&contract.name).await?;
+    }
+    strategy.set_expiry_dates(&broker.date, &broker.instrument_expiry);
 
+    loop {
         check_position_consistency(&broker.positions, &strategy.get_positions());
 
         // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
         tokio::task::block_in_place(|| {
-            strategy.trade(0, contracts.clone(), contracts, &mut broker)
+            strategy.trade(0, contracts.clone(), contracts.clone(), &mut broker)
         })?;
         strategy.pop_spread(); // today's spread needs to be replaced
 
-        tokio::task::block_in_place(|| strategy.save_positions());
+        strategy.save_positions(); // save spread info to disk
         thread::sleep(Duration::from_secs(10));
+        broker.sync(&contracts).await;
     }
 }
 

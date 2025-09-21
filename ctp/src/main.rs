@@ -178,7 +178,5 @@ fn main() -> PolarsResult<()> {
     );
     run_td(config.1, &mut strategy).unwrap();
     md_thread.join().unwrap();
-
-    strategy.save_positions();
     Ok(())
 }

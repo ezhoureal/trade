@@ -1,6 +1,8 @@
 use super::PairStrategy;
 use crate::params::Params;
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use polars::prelude::*;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
@@ -17,7 +19,7 @@ struct SerializablePosition {
 impl PairStrategy {
     pub fn new_live(params: Params, df: LazyFrame) -> Self {
         use std::collections::HashMap;
-
+        let single_commodity = params.commodity_a_prefix == params.commodity_b_prefix;
         let mut strategy = PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -25,12 +27,43 @@ impl PairStrategy {
             contract_expiry: HashMap::new(),
             bar_count: 0,
             trade_log: Vec::new(),
+            single_commodity,
         };
         strategy
             .load_spread_history(df)
             .expect("Failed to load spread history");
         let _ = strategy.load_positions();
         strategy
+    }
+
+    pub fn set_expiry_dates(
+        &mut self,
+        current_date: &NaiveDate,
+        instrument_expiry: &HashMap<String, NaiveDate>,
+    ) {
+        // Helper: count trading days (Mon-Fri) between start (exclusive) and end (inclusive of end-1).
+        fn trading_days_between(start: NaiveDate, end: NaiveDate) -> u32 {
+            if end <= start {
+                return 0;
+            }
+            let mut d = start;
+            let mut count: u32 = 0;
+            while d < end {
+                match d.weekday() {
+                    Weekday::Sat | Weekday::Sun => {}
+                    _ => count += 1,
+                }
+                d = d + Duration::days(1);
+            }
+            count
+        }
+
+        let mut local: HashMap<String, u32> = HashMap::new();
+        for (inst, exp_date) in instrument_expiry.iter() {
+            let days = trading_days_between(*current_date, *exp_date);
+            local.insert(inst.clone(), days);
+        }
+        self.contract_expiry = local;
     }
 
     #[cfg(feature = "live")]
@@ -54,7 +87,7 @@ impl PairStrategy {
         Ok(())
     }
 
-    pub fn get_positions(&self) -> &std::collections::HashMap<(String, String), super::PairPosition> {
+    pub fn get_positions(&self) -> &HashMap<(String, String), super::PairPosition> {
         &self.active_positions
     }
 
@@ -188,5 +221,44 @@ mod test {
         for hist in strategy.spread_histories.values() {
             assert_eq!(hist.len(), 2, "two days of spreads");
         }
+    }
+
+    #[test]
+    fn set_expiry_dates_counts_weekdays() {
+        use chrono::NaiveDate;
+        // current date is a Friday
+        let current = NaiveDate::from_ymd_opt(2025, 9, 19).unwrap(); // 2025-09-19 (Fri)
+
+        let mut params = Params::default();
+        let mut strat = PairStrategy::new(params.clone(), HashMap::new());
+
+        let mut inst_expiry: HashMap<String, NaiveDate> = HashMap::new();
+        // Same-day expiry -> 0
+        inst_expiry.insert(
+            "ag2510".into(),
+            NaiveDate::from_ymd_opt(2025, 9, 19).unwrap(),
+        );
+        // Following Monday -> counts Friday only -> 1
+        inst_expiry.insert(
+            "ag2511".into(),
+            NaiveDate::from_ymd_opt(2025, 9, 22).unwrap(),
+        );
+        // Next Friday -> Fri (19), Mon-Thu (22-25) => 5 trading days
+        inst_expiry.insert(
+            "cu2510".into(),
+            NaiveDate::from_ymd_opt(2025, 9, 26).unwrap(),
+        );
+        // Past expiry -> 0
+        inst_expiry.insert(
+            "cu2509".into(),
+            NaiveDate::from_ymd_opt(2025, 9, 18).unwrap(),
+        );
+
+        strat.set_expiry_dates(&current, &inst_expiry);
+
+        assert_eq!(strat.contract_expiry.get("ag2510").copied(), Some(0));
+        assert_eq!(strat.contract_expiry.get("ag2511").copied(), Some(1));
+        assert_eq!(strat.contract_expiry.get("cu2510").copied(), Some(5));
+        assert_eq!(strat.contract_expiry.get("cu2509").copied(), Some(0));
     }
 }

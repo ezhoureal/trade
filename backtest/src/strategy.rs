@@ -46,10 +46,12 @@ pub struct PairStrategy {
     active_positions: HashMap<(String, String), PairPosition>,
     contract_expiry: HashMap<String, u32>,
     bar_count: u32,
+    single_commodity: bool,
 }
 
 impl PairStrategy {
     pub fn new(params: Params, contract_expiry: HashMap<String, u32>) -> Self {
+        let single_commodity = params.commodity_a_prefix == params.commodity_b_prefix;
         PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -57,6 +59,7 @@ impl PairStrategy {
             contract_expiry,
             bar_count: 0,
             trade_log: Vec::new(),
+            single_commodity,
         }
     }
 
@@ -114,8 +117,8 @@ impl PairStrategy {
         broker: &mut dyn Broker,
     ) -> Option<()> {
         let executed_size = futures::executor::block_on(match pos.kind {
-            PositionKind::Long => broker.exec_spread((&pair.0, &pair.1), -(pos.size as i32), false),
-            PositionKind::Short => broker.exec_spread((&pair.0, &pair.1), pos.size as i32, false),
+            PositionKind::Long => broker.exec_spread(pair.clone(), -(pos.size as i32), false),
+            PositionKind::Short => broker.exec_spread(pair.clone(), pos.size as i32, false),
         })?;
         if executed_size != pos.size {
             eprintln!(
@@ -224,6 +227,10 @@ impl PairStrategy {
         contr_b: &ContractData,
         broker: &mut dyn Broker,
     ) -> Option<()> {
+        if self.single_commodity && contr_a.name > contr_b.name {
+            // flip to ensure (a,b) always lexically ordered
+            return self.try_enter(contr_b, contr_a, broker);
+        }
         let pair = (contr_a.name.clone(), contr_b.name.clone());
         if self.active_positions.contains_key(&pair) {
             return None;
@@ -259,7 +266,7 @@ impl PairStrategy {
         }
         let leg_prices = (contr_a.price + contr_b.price) * VOLUME_MULTIPLE;
         let cost = leg_prices * (MARGIN_RATIO + self.params.transaction_cost_pct);
-        let mut size: u32 = (status.cash.min(status.equity * 0.5) / cost).floor() as u32;
+        let mut size: u32 = (status.cash.min(status.equity) / cost).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
@@ -268,20 +275,21 @@ impl PairStrategy {
         if size <= 0 {
             return None;
         }
-        size = futures::executor::block_on(match kind {
-            PositionKind::Long => broker.exec_spread((&pair.0, &pair.1), size as i32, true),
-            PositionKind::Short => broker.exec_spread((&pair.0, &pair.1), -(size as i32), true),
-        })?;
         if self.params.debug {
             println!("Entering {:?} {:?} size {} z={:.3}", pair, kind, size, z);
         }
+        let entry_spread = self.cur_price(&pair)?;
+        size = futures::executor::block_on(match kind {
+            PositionKind::Long => broker.exec_spread(pair.clone(), size as i32, true),
+            PositionKind::Short => broker.exec_spread(pair.clone(), -(size as i32), true),
+        })?;
 
         self.active_positions.insert(
-            pair.clone(),
+            pair,
             PairPosition {
                 kind,
                 entry_bar: self.bar_count,
-                entry_spread: self.cur_price(&pair)?,
+                entry_spread,
                 entry_z: z,
                 gross_notional: size as f32 * leg_prices,
                 size: size,
@@ -297,11 +305,10 @@ impl PairStrategy {
         broker: &mut dyn Broker,
     ) -> Option<()> {
         const MAX_CONTRACTS: usize = 5;
-        let same_contract = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
         a.sort_by_key(|c| std::cmp::Reverse(c.volume));
         a.truncate(a.len().min(MAX_CONTRACTS));
 
-        if same_contract {
+        if self.single_commodity {
             for i in 0..a.len() {
                 for j in (i + 1)..a.len() {
                     let contr_a = &a[i];
@@ -414,7 +421,7 @@ mod tests {
             }
         }
 
-        async fn exec_spread(&mut self, _: (&str, &str), qty: i32, _: bool) -> Option<u32> {
+        async fn exec_spread(&mut self, _: (String, String), qty: i32, _: bool) -> Option<u32> {
             Some(qty.abs() as u32) // assume full execution always
         }
     }

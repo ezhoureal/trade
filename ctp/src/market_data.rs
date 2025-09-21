@@ -27,6 +27,14 @@ pub fn get_price(instrument: &str) -> Option<f32> {
         .and_then(|m| m.get(&key).map(|q| q.last_price))
 }
 
+pub fn get_volume(instrument: &str) -> Option<u32> {
+    let key = instrument.to_ascii_lowercase();
+    MARKET_DATA
+        .read()
+        .ok()
+        .and_then(|m| m.get(&key).map(|q| q.volume))
+}
+
 pub fn snapshot_contracts() -> Vec<ContractData> {
     if let Ok(map) = MARKET_DATA.read() {
         map.iter()

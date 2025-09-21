@@ -92,20 +92,20 @@ pub struct AccountStatus {
 
 #[async_trait]
 pub trait Broker {
-    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32>;
+    async fn exec_spread(&mut self, pair: (String, String), qty: i32, open: bool) -> Option<u32>;
 
     fn get_status(&'_ self) -> AccountStatus;
 }
 
 #[async_trait]
 impl<'a> Broker for Engine<'a> {
-    async fn exec_spread(&mut self, pair: (&str, &str), qty: i32, open: bool) -> Option<u32> {
+    async fn exec_spread(&mut self, pair: (String, String), qty: i32, open: bool) -> Option<u32> {
         if open {
-            self.open(pair.0, qty);
-            self.open(pair.1, -qty);
+            self.open(&pair.0, qty);
+            self.open(&pair.1, -qty);
         } else {
-            self.close(pair.0, qty);
-            self.close(pair.1, -qty);
+            self.close(&pair.0, qty);
+            self.close(&pair.1, -qty);
         }
         Some(qty.abs() as u32)
     }
