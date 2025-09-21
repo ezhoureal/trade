@@ -30,14 +30,15 @@ pub struct TradeLogEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairPosition {
-    kind: PositionKind,
+    pub kind: PositionKind,
     entry_z: f32,
     entry_bar: u32,
     entry_spread: f32,
     gross_notional: f32, // exposure at entry (for PnL % calculation)
-    size: u32,
+    pub size: u32,
 }
 
+pub type SpreadPositions = HashMap<(String, String), PairPosition>;
 pub struct PairStrategy {
     params: Params,
     trade_log: Vec<TradeLogEntry>,
@@ -251,16 +252,13 @@ impl PairStrategy {
             PositionKind::Long
         };
 
-        let status = broker.get_status();
-        if status.cash <= 0.0 {
-            return None;
+        let mut status = broker.get_status();
+        status.cash = status.cash - status.equity * 0.05; // reserver 5% of equity as buffer
+        if status.cash < 0.0 {
+            return Some(()); // skip trading when positions are already large
         }
         let leg_prices = (contr_a.price + contr_b.price) * VOLUME_MULTIPLE;
         let cost = leg_prices * (MARGIN_RATIO + self.params.transaction_cost_pct);
-        println!(
-            "Margin calculation for {:?}: leg_prices={:.2}, cost={:.2}, cash={:.2}, equity={:.2}",
-            pair, leg_prices, cost, status.cash, status.equity
-        );
         let mut size: u32 = (status.cash.min(status.equity * 0.5) / cost).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume

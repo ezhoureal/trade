@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "a": "ag2510",
+    "b": "ag2602",
+    "pos": {
+      "kind": "Long",
+      "entry_z": -2.447167,
+      "entry_bar": 0,
+      "entry_spread": -54.0,
+      "gross_notional": 34272300.0,
+      "size": 115
+    }
+  },
+  {
+    "a": "ag2510",
+    "b": "ag2601",
+    "pos": {
+      "kind": "Long",
+      "entry_z": -2.4457047,
+      "entry_bar": 0,
+      "entry_spread": -44.0,
+      "gross_notional": 2978700.0,
+      "size": 10
+    }
+  },
+  {
+    "a": "ag2512",
+    "b": "ag2510",
+    "pos": {
+      "kind": "Short",
+      "entry_z": 2.8547125,
+      "entry_bar": 0,
+      "entry_spread": 33.0,
+      "gross_notional": 34236076.0,
+      "size": 115
+    }
+  }
+]

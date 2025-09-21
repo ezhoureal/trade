@@ -54,6 +54,10 @@ impl PairStrategy {
         Ok(())
     }
 
+    pub fn get_positions(&self) -> &std::collections::HashMap<(String, String), super::PairPosition> {
+        &self.active_positions
+    }
+
     pub fn save_positions(&self) {
         // Save current positions to a file as a Vec of records to avoid non-string map keys.
         use std::fs::File;

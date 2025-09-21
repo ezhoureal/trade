@@ -33,6 +33,7 @@ pub struct TdAccountConfig {
     pub td_auth_code: String,
     pub td_front_address: String,
     pub td_dynlib_path: PathBuf,
+    pub special_close_all: bool
 }
 
 #[derive(Parser)]
@@ -49,17 +50,19 @@ struct Args {
     /// 密码
     #[arg(short, long, env = "OPENCTP_PASS")]
     password: String,
+
+    /// 特殊平仓模式
+    #[arg(long = "special-close-all")]
+    close_all: bool,
 }
 
 fn create_config_for_environment(
-    env: Environment,
-    user_id: String,
-    password: String,
+    args: Args,
 ) -> (MdAccountConfig, TdAccountConfig) {
     let base_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let base_path = std::path::Path::new(&base_dir);
 
-    match env {
+    match args.environment {
         Environment::Sim => {
             // 仿真环境配置
             #[cfg(target_os = "macos")]
@@ -89,11 +92,12 @@ fn create_config_for_environment(
                 },
                 TdAccountConfig {
                     td_user_id: "14572".to_string(),
-                    td_password: password,
+                    td_password: args.password,
                     td_app_id: "simnow_client_test".to_string(),
                     td_auth_code: "0000000000000000".to_string(),
                     td_front_address: "tcp://121.37.90.193:20002".to_string(), // OPENCTP 仿真环境
                     td_dynlib_path,
+                    special_close_all: args.close_all
                 },
             )
         }
@@ -115,17 +119,18 @@ fn create_config_for_environment(
 
             (
                 MdAccountConfig {
-                    md_user_id: user_id.clone(),
+                    md_user_id: args.user_id.clone(),
                     md_front_address: "tcp://121.37.80.177:20004".to_string(), // TTS 7x24 环境
                     md_dynlib_path,
                 },
                 TdAccountConfig {
-                    td_user_id: user_id,
-                    td_password: password,
+                    td_user_id: args.user_id,
+                    td_password: args.password,
                     td_app_id: "simnow_client_test".to_string(),
                     td_auth_code: "0000000000000000".to_string(),
                     td_front_address: "tcp://121.37.80.177:20002".to_string(), // TTS 7x24 环境
                     td_dynlib_path,
+                    special_close_all: args.close_all,
                 },
             )
         }
@@ -137,7 +142,7 @@ fn main() -> PolarsResult<()> {
 
     println!("Running with environment: {:?}", args.environment);
 
-    let config = create_config_for_environment(args.environment, args.user_id, args.password);
+    let config = create_config_for_environment(args);
 
     let df = LazyFrame::scan_parquet("../data/recent.parquet", ScanArgsParquet::default())?;
     let contracts_df = df

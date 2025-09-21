@@ -4,8 +4,8 @@ use std::{any::Any, collections::HashMap, env, mem, thread, time::Duration};
 use anyhow::Result;
 use async_trait::async_trait;
 use backtest::{
-    engine::{AccountStatus, Broker, ContractData},
-    strategy::{PairStrategy, MARGIN_RATIO, VOLUME_MULTIPLE},
+    engine::{AccountStatus, Broker, ContractData, PositionKind},
+    strategy::{PairStrategy, SpreadPositions, MARGIN_RATIO, VOLUME_MULTIPLE},
 };
 use ctp2rs::ffi::{AssignFromString, WrapToString};
 use ctp2rs::v1alpha1::TraderSpiEvent::*;
@@ -126,7 +126,10 @@ impl LiveBroker {
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
         order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
-        order.TimeCondition = THOST_FTDC_TC_IOC as i8;
+        if self.config.special_close_all {
+            order.OrderPriceType = THOST_FTDC_OPT_AnyPrice as i8;
+        }
+        order.TimeCondition = THOST_FTDC_TC_GFD as i8;
         order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty.abs();
         order
@@ -408,15 +411,53 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
     }
 }
 
+fn check_position_consistency(broker: &HashMap<String, Position>, strategy: &SpreadPositions) {
+    let mut total_long = HashMap::new();
+    let mut total_short = HashMap::new();
+    for ((a, b), pos) in strategy.iter() {
+        let (long_sym, short_sym) = match pos.kind {
+            PositionKind::Long => (a, b),
+            PositionKind::Short => (b, a),
+        };
+        *total_long.entry(long_sym).or_insert(0) += pos.size;
+        *total_short.entry(short_sym).or_insert(0) += pos.size;
+    }
+    for (sym, pos) in broker.iter() {
+        let long = total_long.get(sym).cloned().unwrap_or(0);
+        let short = total_short.get(sym).cloned().unwrap_or(0);
+        let broker_long = pos.long_today + pos.long_yd;
+        let broker_short = pos.short_today + pos.short_yd;
+        if long != broker_long {
+            println!(
+                "position mismatch for {}: strategy long = {}, broker long = {}",
+                sym, long, broker_long
+            );
+        }
+        if short != broker_short {
+            println!(
+                "position mismatch for {}: strategy short = {}, broker short = {}",
+                sym, short, broker_short
+            );
+        }
+    }
+}
+
 #[tokio::main]
 pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Result<()> {
     let mut broker = init_api(config).await;
     thread::sleep(Duration::from_secs(1));
-    for _ in 0..100 {
+    if broker.config.special_close_all {
+        broker.close_all().await;
+        strategy.save_positions();
+        return Ok(());
+    }
+
+    loop {
         let contracts = snapshot_contracts();
         println!("td loop, snapshot has {} contracts", contracts.len());
-        // broker.update_positions();
         broker.sync(&contracts).await;
+
+        check_position_consistency(&broker.positions, &strategy.get_positions());
 
         // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
         tokio::task::block_in_place(|| {
@@ -424,9 +465,9 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         })?;
         strategy.pop_spread(); // today's spread needs to be replaced
 
+        tokio::task::block_in_place(|| strategy.save_positions());
         thread::sleep(Duration::from_secs(10));
     }
-    Ok(())
 }
 
 #[cfg(test)]
