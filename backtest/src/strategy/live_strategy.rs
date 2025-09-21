@@ -87,7 +87,6 @@ impl PairStrategy {
             limit: None,
         };
         let sorted = df.sort_by_exprs(vec![col("Date")], sort_opts).collect()?;
-        let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
         let contracts_s = sorted.column("Contract")?.str()?;
         let prices_f = sorted.column("Price")?.f64()?;
         let date_col = sorted.column("Date")?;
@@ -98,7 +97,7 @@ impl PairStrategy {
             let cur_date = date_col.get(row)?;
             if let Some(ref ld) = last_date {
                 if &cur_date != ld {
-                    self.flush_day(&a_contracts, &b_contracts, same_prefix);
+                    self.flush_day(&a_contracts, &b_contracts);
                     a_contracts.clear();
                     b_contracts.clear();
                 }
@@ -108,45 +107,27 @@ impl PairStrategy {
                 if let Some(price_v) = prices_f.get(row) {
                     let price = price_v as f32;
                     let c_l = contract.to_lowercase();
-                    if same_prefix {
-                        if c_l.starts_with(&self.params.commodity_a_prefix) {
-                            a_contracts.push((contract.to_string(), price));
-                        }
-                    } else {
-                        if c_l.starts_with(&self.params.commodity_a_prefix) {
-                            a_contracts.push((contract.to_string(), price));
-                        } else if c_l.starts_with(&self.params.commodity_b_prefix) {
-                            b_contracts.push((contract.to_string(), price));
-                        }
+                    if c_l.starts_with(&self.params.commodity_a_prefix) {
+                        a_contracts.push((contract.to_string(), price));
+                    }
+                    if c_l.starts_with(&self.params.commodity_b_prefix) {
+                        b_contracts.push((contract.to_string(), price));
                     }
                 }
             }
         }
-        self.flush_day(&a_contracts, &b_contracts, same_prefix);
+        self.flush_day(&a_contracts, &b_contracts);
         Ok(())
     }
 
-    fn flush_day(
-        &mut self,
-        a_contracts: &Vec<(String, f32)>,
-        b_contracts: &Vec<(String, f32)>,
-        same_prefix: bool,
-    ) {
-        if same_prefix {
-            for i in 0..a_contracts.len() {
-                for j in (i + 1)..a_contracts.len() {
-                    let (ref name_i, price_i) = a_contracts[i];
-                    let (ref name_j, price_j) = a_contracts[j];
-                    let spread = price_i - price_j;
-                    self.push_spread((name_i.clone(), name_j.clone()), spread);
+    fn flush_day(&mut self, a_contracts: &Vec<(String, f32)>, b_contracts: &Vec<(String, f32)>) {
+        for (name_a, price_a) in a_contracts.iter() {
+            for (name_b, price_b) in b_contracts.iter() {
+                if name_a == name_b {
+                    continue; // skip same contract pairs
                 }
-            }
-        } else {
-            for (name_a, price_a) in a_contracts.iter() {
-                for (name_b, price_b) in b_contracts.iter() {
-                    let spread = *price_a - *price_b;
-                    self.push_spread((name_a.clone(), name_b.clone()), spread);
-                }
+                let spread = *price_a - *price_b;
+                self.push_spread((name_a.clone(), name_b.clone()), spread);
             }
         }
     }
@@ -155,9 +136,6 @@ impl PairStrategy {
 #[cfg(all(test, feature = "live"))]
 mod test {
     use std::collections::HashMap;
-    use std::fs::File;
-    use std::io::Read;
-    use std::io::Write;
 
     use super::*;
 
@@ -198,11 +176,10 @@ mod test {
         strategy
             .load_spread_history(df.lazy())
             .expect("load history");
-        // Expect 3 pairs: ag2510/ag2511, ag2510/ag2512, ag2511/ag2512
         assert_eq!(
             strategy.spread_histories.len(),
-            3,
-            "should have 3 intra pairs"
+            6,
+            "should have 6 intra pairs"
         );
         for hist in strategy.spread_histories.values() {
             assert_eq!(hist.len(), 2, "two days of spreads");

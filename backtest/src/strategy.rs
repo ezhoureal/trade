@@ -12,7 +12,6 @@ use crate::{
 // based on ag
 pub static MARGIN_RATIO: f32 = 0.14;
 pub static VOLUME_MULTIPLE: f32 = 15.0;
-pub static TRANSACTION_COST: f32 = 0.00005;
 
 #[derive(Debug, Serialize)]
 pub struct TradeLogEntry {
@@ -71,8 +70,8 @@ impl PairStrategy {
         // Build / update spread histories for all observed pairs today.
         for contr_a in a.iter() {
             for contr_b in b.iter() {
-                if contr_a.name >= contr_b.name {
-                    continue; // avoid duplicate pairs
+                if contr_a.name == contr_b.name {
+                    continue;
                 }
                 let spread = contr_a.price - contr_b.price;
                 self.push_spread((contr_a.name.clone(), contr_b.name.clone()), spread);
@@ -134,7 +133,8 @@ impl PairStrategy {
         let pnl = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
-        } * pos.size as f32 * VOLUME_MULTIPLE
+        } * pos.size as f32
+            * VOLUME_MULTIPLE
             - self.params.transaction_cost_pct * pos.gross_notional * 2.0;
         self.trade_log.push(TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
@@ -181,9 +181,9 @@ impl PairStrategy {
     fn push_spread(&mut self, pair: (String, String), spread: f32) {
         let lookback = self.params.lookback_zscore;
         let entry = self
-        .spread_histories
-        .entry(pair)
-        .or_insert_with(|| VecDeque::with_capacity(lookback));
+            .spread_histories
+            .entry(pair)
+            .or_insert_with(|| VecDeque::with_capacity(lookback));
         if entry.len() == lookback {
             entry.pop_front();
         }
@@ -223,9 +223,6 @@ impl PairStrategy {
         contr_b: &ContractData,
         broker: &mut dyn Broker,
     ) -> Option<()> {
-        if contr_a.name >= contr_b.name {
-            return None; // avoid duplicate pairs
-        }
         let pair = (contr_a.name.clone(), contr_b.name.clone());
         if self.active_positions.contains_key(&pair) {
             return None;
@@ -258,9 +255,13 @@ impl PairStrategy {
         if status.cash <= 0.0 {
             return None;
         }
-        let leg_prices = (contr_a.price.abs() + contr_b.price.abs()) * VOLUME_MULTIPLE;
-        let cost = leg_prices * (MARGIN_RATIO + TRANSACTION_COST);
-        let mut size: u32 = (status.cash / cost).floor() as u32;
+        let leg_prices = (contr_a.price + contr_b.price) * VOLUME_MULTIPLE;
+        let cost = leg_prices * (MARGIN_RATIO + self.params.transaction_cost_pct);
+        println!(
+            "Margin calculation for {:?}: leg_prices={:.2}, cost={:.2}, cash={:.2}, equity={:.2}",
+            pair, leg_prices, cost, status.cash, status.equity
+        );
+        let mut size: u32 = (status.cash.min(status.equity * 0.5) / cost).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
@@ -298,16 +299,31 @@ impl PairStrategy {
         broker: &mut dyn Broker,
     ) -> Option<()> {
         const MAX_CONTRACTS: usize = 5;
+        let same_contract = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
         a.sort_by_key(|c| std::cmp::Reverse(c.volume));
-        b.sort_by_key(|c| std::cmp::Reverse(c.volume));
         a.truncate(a.len().min(MAX_CONTRACTS));
-        b.truncate(b.len().min(MAX_CONTRACTS));
 
-        for contr_a in a.iter() {
-            for contr_b in b.iter() {
-                if self.try_enter(contr_a, contr_b, broker).is_some() {
-                    // only one entry per call to then sync positions
-                    break;
+        if same_contract {
+            for i in 0..a.len() {
+                for j in (i + 1)..a.len() {
+                    let contr_a = &a[i];
+                    let contr_b = &a[j];
+                    if self.try_enter(contr_a, contr_b, broker).is_some() {
+                        // only one entry per call to then sync positions
+                        break;
+                    }
+                }
+            }
+        } else {
+            // different prefixes
+            b.sort_by_key(|c| std::cmp::Reverse(c.volume));
+            b.truncate(b.len().min(MAX_CONTRACTS));
+            for contr_a in a.iter() {
+                for contr_b in b.iter() {
+                    if self.try_enter(contr_a, contr_b, broker).is_some() {
+                        // only one entry per call to then sync positions
+                        break;
+                    }
                 }
             }
         }
@@ -651,7 +667,7 @@ mod tests {
         // Expected gross PnL: (exit_spread - entry_spread) * size  (Long position)
         // entry_spread ≈ -3.0, exit_spread ≈ -1.0 => diff = 2.0
         let expected_gross = (trade.exit_spread - entry_spread) * size * VOLUME_MULTIPLE; // 2.0 * size
-                                                                        // Costs: 2 * transaction_cost_pct * gross_notional
+                                                                                          // Costs: 2 * transaction_cost_pct * gross_notional
         let expected_costs = 2.0 * params.transaction_cost_pct * gross_notional;
         let expected_net = expected_gross - expected_costs;
 
