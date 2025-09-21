@@ -310,13 +310,13 @@ impl Broker for LiveBroker {
     async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
         // execute the less liquid leg first
         let flag = determine_flag(open, qty, &self.positions[pair.1])?;
-        qty = self.submit_order(pair.1, qty, flag).await?;
+        qty = self.submit_order(pair.1, -qty, flag).await?;
         if qty == 0 {
             return None;
         }
 
         // only need to determine flag once, since flags always match for both legs
-        let qty2 = self.submit_order(pair.0, -qty, flag).await?;
+        let qty2 = self.submit_order(pair.0, qty, flag).await?;
         if qty2 != qty {
             println!(
                 "warning: filled qty not match for spread legs: {}, {}",
