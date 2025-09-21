@@ -1,0 +1,41 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "cargo build (workspace)",
+			"type": "shell",
+			"command": "cargo build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "cargo build (workspace)",
+			"type": "shell",
+			"command": "cargo build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "cargo build (workspace)",
+			"type": "shell",
+			"command": "cargo build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "cargo test backtest (live feature)",
+			"type": "shell",
+			"command": "cargo test -p backtest --features live",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "test"
+		}
+	]
+}
