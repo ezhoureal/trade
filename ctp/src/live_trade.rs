@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::{any::Any, collections::HashMap, env, thread, time::Duration};
+use std::{any::Any, collections::HashMap, env, mem, thread, time::Duration};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,13 +12,16 @@ use ctp2rs::v1alpha1::TraderSpiEvent::*;
 use ctp2rs::v1alpha1::*;
 
 use crate::{
-    market_data::{get_last_price, snapshot_contracts},
+    market_data::{get_price, snapshot_contracts},
     TdAccountConfig,
 };
 
+#[derive(Clone, Debug)]
 struct Position {
-    long: u32,
-    short: u32,
+    long_today: u32,
+    long_yd: u32,
+    short_today: u32,
+    short_yd: u32,
 }
 
 struct LiveBroker {
@@ -43,33 +46,33 @@ impl LiveBroker {
         self.api
             .req_qry_investor_position(&mut qry, self.request_id);
 
-        let mut long_size = 0;
-        let mut short_size = 0;
+        let mut long_today = 0;
+        let mut short_today = 0;
+        let mut long_yd = 0;
+        let mut short_yd = 0;
         while let Some(spi_msg) = self.stream.next().await {
             match spi_msg {
                 TraderSpiEvent::OnRspQryInvestorPosition(event) => {
                     let pos = event.investor_position?;
-                    if pos.Position == 0 {
-                        if event.is_last {
-                            break;
-                        }
-                        continue;
-                    }
                     if pos.PosiDirection as u8 == THOST_FTDC_PD_Long {
-                        long_size += pos.Position as u32;
+                        long_today += pos.TodayPosition as u32;
+                        long_yd += (pos.Position - pos.TodayPosition) as u32;
                     } else if pos.PosiDirection as u8 == THOST_FTDC_PD_Short {
-                        short_size += pos.Position as u32;
+                        short_today += pos.TodayPosition as u32;
+                        short_yd += (pos.Position - pos.TodayPosition) as u32;
                     }
                     println!(
-                            "OnRspQryInvestorPosition: contract = {}, position {}, margin = {}, direction = {}", pos.InstrumentID.to_string(),
-                            pos.Position, pos.UseMargin, pos.PosiDirection
+                            "OnRspQryInvestorPosition: contract = {}, position {}, ydPosition {}, todayPosition {} margin = {}, direction = {}", pos.InstrumentID.to_string(),
+                            pos.Position, pos.YdPosition, pos.TodayPosition, pos.UseMargin, pos.PosiDirection
                         );
                     if event.is_last {
                         self.positions.insert(
                             instrument.clone(),
                             Position {
-                                long: long_size,
-                                short: short_size,
+                                long_today,
+                                long_yd,
+                                short_today,
+                                short_yd,
                             },
                         );
                         break;
@@ -125,7 +128,7 @@ impl LiveBroker {
         order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
         order.TimeCondition = THOST_FTDC_TC_IOC as i8;
         order.VolumeCondition = THOST_FTDC_VC_MV as i8;
-        order.VolumeTotalOriginal = qty;
+        order.VolumeTotalOriginal = qty.abs();
         order
             .OrderRef
             .assign_from_str(self.request_id.to_string().as_str());
@@ -137,24 +140,49 @@ impl LiveBroker {
         order
     }
 
-    async fn submit_order(&mut self, symbol: &str, qty: i32, is_open: bool) -> Option<i32> {
-        let price = get_last_price(symbol)?;
+    #[allow(dead_code)]
+    async fn close_all(&mut self) -> Option<()> {
+        self.sync(&snapshot_contracts()).await?;
         println!(
-            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, margin = {}, cash = {}",
+            "closing all positions, position size = {}",
+            self.positions.len()
+        );
+        let positions = self.positions.clone();
+        for (symbol, pos) in positions.iter() {
+            println!(
+                "closing position for {}: long_today = {}, long_yd = {}, short_today = {}, short_yd = {}",
+                symbol, pos.long_today, pos.long_yd, pos.short_today, pos.short_yd
+            );
+            self.submit_order(symbol, -(pos.long_yd as i32), THOST_FTDC_OF_CloseYesterday)
+                .await?;
+            self.submit_order(&symbol, -(pos.long_today as i32), THOST_FTDC_OF_CloseToday)
+                .await?;
+            self.submit_order(&symbol, pos.short_yd as i32, THOST_FTDC_OF_CloseYesterday)
+                .await?;
+            self.submit_order(&symbol, pos.short_today as i32, THOST_FTDC_OF_CloseToday)
+                .await?;
+        }
+        self.sync(&snapshot_contracts()).await?;
+        Some(())
+    }
+
+    async fn submit_order(&mut self, symbol: &str, qty: i32, offset_flag: u8) -> Option<i32> {
+        if qty == 0 {
+            return Some(0);
+        }
+        let price = get_price(symbol)?;
+        println!(
+            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cost = {}, cash = {}",
             symbol,
             qty,
-            is_open,
+            offset_flag == THOST_FTDC_OF_Open,
             price,
-            price * qty as f32 * MARGIN_RATIO * VOLUME_MULTIPLE as f32,
+            price * qty.abs() as f32 * (MARGIN_RATIO * VOLUME_MULTIPLE + 0.00005),
             self.cash
         );
         let mut order = self.order_default(symbol, qty);
         order.LimitPrice = price as f64;
-        order.CombOffsetFlag[0] = if is_open {
-            THOST_FTDC_OF_Open as i8
-        } else {
-            THOST_FTDC_OF_CloseYesterday as i8
-        };
+        order.CombOffsetFlag[0] = offset_flag as i8;
 
         self.request_id += 1;
         self.api.req_order_insert(&mut order, self.request_id);
@@ -211,7 +239,6 @@ impl LiveBroker {
 
                     println!("成交回报 OnRtnTrade: OrderRef: {}, BrokerID: {}, InvestorID: {}, ExchangeID: {}, TradeID: {}, InstrumentID: {}, Price: {:.2}, Volume: {}",
                           order_ref, broker_id, investor_id, exchange_id, trade_id, instrument_id, price, volume);
-                    self.cash -= 2.0 * price * volume as f32;
                     return Some(volume);
                 }
                 _ => {
@@ -257,18 +284,40 @@ impl LiveBroker {
             }
         }
     }
+
 }
+
+    fn determine_flag(open: bool, qty: i32, pos: &Position) -> Option<u8> {
+        let long = qty > 0;
+        let qty_abs = qty.abs() as u32;
+        if open {
+            Some(THOST_FTDC_OF_Open)
+        } else if long && pos.short_today >= qty_abs {
+            Some(THOST_FTDC_OF_CloseToday)
+        } else if long && pos.short_yd >= qty_abs {
+            Some(THOST_FTDC_OF_CloseYesterday)
+        } else if !long && pos.long_today >= qty_abs {
+            Some(THOST_FTDC_OF_CloseToday)
+        } else if !long && pos.long_yd >= qty_abs {
+            Some(THOST_FTDC_OF_CloseYesterday)
+        } else {
+            println!("no position to close for given qty {}", qty);
+            None // fallback to open
+        }
+    }
 
 #[async_trait]
 impl Broker for LiveBroker {
     async fn exec_spread(&mut self, pair: (&str, &str), mut qty: i32, open: bool) -> Option<u32> {
         // execute the less liquid leg first
-        qty = self.submit_order(pair.1, qty, open).await?;
+        let flag =  determine_flag(open, qty, &self.positions[pair.1])?;
+        qty = self.submit_order(pair.1, qty, flag).await?;
         if qty == 0 {
             return None;
         }
 
-        let qty2 = self.submit_order(pair.0, -qty, open).await?;
+        // only need to determine flag once, since flags always match for both legs
+        let qty2 = self.submit_order(pair.0, -qty, flag).await?;
         if qty2 != qty {
             println!(
                 "warning: filled qty not match for spread legs: {}, {}",
@@ -283,8 +332,8 @@ impl Broker for LiveBroker {
         // Gross exposure: sum |position| * price
         let mut gross_exposure: f32 = 0.0;
         for (sym, pos) in self.positions.iter() {
-            if let Some(p) = get_last_price(sym) {
-                gross_exposure += p * (pos.long + pos.short) as f32;
+            if let Some(p) = get_price(sym) {
+                gross_exposure += p * (pos.long_today + pos.short_today) as f32;
             }
         }
         AccountStatus {
@@ -368,7 +417,7 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
         let contracts = snapshot_contracts();
         println!("td loop, snapshot has {} contracts", contracts.len());
         // broker.update_positions();
-        broker.sync(&contracts.clone()).await;
+        broker.sync(&contracts).await;
 
         // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
         tokio::task::block_in_place(|| {

@@ -19,7 +19,7 @@ pub fn update_quote(instrument: &str, last_price: f32, volume: u32) {
     }
 }
 
-pub fn get_last_price(instrument: &str) -> Option<f32> {
+pub fn get_price(instrument: &str) -> Option<f32> {
     let key = instrument.to_ascii_lowercase();
     MARKET_DATA
         .read()
