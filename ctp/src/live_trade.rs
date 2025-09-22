@@ -499,11 +499,12 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
     thread::sleep(Duration::from_secs(1));
     if broker.config.special_close_all {
         broker.close_all().await;
-        strategy.save_positions();
+        std::fs::remove_file("positions.json")?;
         return Ok(());
     }
 
     let contracts = snapshot_contracts();
+    println!("syncing positions for {} contracts", contracts.len());
     broker.sync(&contracts).await;
     for contract in contracts.iter() {
         broker.query_expiry_date(&contract.name).await?;

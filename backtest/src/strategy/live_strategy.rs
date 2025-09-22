@@ -4,7 +4,6 @@ use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 
 // Helper type to persist active_positions where the key is a tuple (String, String).
 // JSON object keys must be strings, so we store as a Vec of records instead.

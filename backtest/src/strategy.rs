@@ -260,7 +260,7 @@ impl PairStrategy {
         };
 
         let mut status = broker.get_status();
-        status.cash = status.cash - status.equity * 0.05; // reserver 5% of equity as buffer
+        status.cash = status.cash - status.equity * 0.1; // reserver 10% of equity as buffer
         if status.cash < 0.0 {
             return Some(()); // skip trading when positions are already large
         }
@@ -315,7 +315,7 @@ impl PairStrategy {
                     let contr_b = &a[j];
                     if self.try_enter(contr_a, contr_b, broker).is_some() {
                         // only one entry per call to then sync positions
-                        break;
+                        return Some(());
                     }
                 }
             }
@@ -327,7 +327,7 @@ impl PairStrategy {
                 for contr_b in b.iter() {
                     if self.try_enter(contr_a, contr_b, broker).is_some() {
                         // only one entry per call to then sync positions
-                        break;
+                        return Some(());
                     }
                 }
             }
