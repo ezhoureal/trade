@@ -73,6 +73,8 @@ impl PairStrategy {
     }
 
     fn load_positions(&mut self) -> std::io::Result<()> {
+        use std::io::Read;
+
         let mut file = File::open("positions.json")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
