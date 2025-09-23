@@ -25,5 +25,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Run backtest tests
+      run: cargo test -p backtest --verbose
+    - name: Run ctp tests
+      run: cargo test -p ctp --verbose
