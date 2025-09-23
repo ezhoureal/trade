@@ -43,7 +43,7 @@ pub struct PairStrategy {
     params: Params,
     trade_log: Vec<TradeLogEntry>,
     spread_histories: HashMap<(String, String), VecDeque<f32>>,
-    active_positions: HashMap<(String, String), PairPosition>,
+    active_positions: SpreadPositions,
     contract_expiry: HashMap<String, u32>,
     bar_count: u32,
     single_commodity: bool,
@@ -140,7 +140,8 @@ impl PairStrategy {
         } * pos.size as f32
             * VOLUME_MULTIPLE
             - self.params.transaction_cost_pct * pos.gross_notional * 2.0;
-        self.trade_log.push(TradeLogEntry {
+
+        let entry = TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
             kind: match pos.kind {
                 PositionKind::Long => "long".into(),
@@ -155,7 +156,12 @@ impl PairStrategy {
             entry_spread: pos.entry_spread,
             exit_spread: cur_price,
             reason: reason.into(),
-        });
+        };
+        #[cfg(not(feature = "live"))]
+        self.trade_log.push(entry);
+        #[cfg(feature = "live")]
+        self.append_log(entry);
+
         Some(())
     }
 

@@ -65,11 +65,23 @@ impl PairStrategy {
         self.contract_expiry = local;
     }
 
-    #[cfg(feature = "live")]
     pub fn pop_spread(&mut self) {
         for (_, history) in self.spread_histories.iter_mut() {
             history.pop_back();
         }
+    }
+
+    pub(super) fn append_log(&self, log_entry: super::TradeLogEntry) {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("log.json")
+            .expect("Failed to open log.json");
+        let json_line = serde_json::to_string(&log_entry).expect("Failed to serialize log entry");
+        writeln!(file, "{}", json_line).expect("Failed to write to log.json");
     }
 
     fn load_positions(&mut self) -> std::io::Result<()> {
