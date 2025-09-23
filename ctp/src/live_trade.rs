@@ -25,6 +25,17 @@ struct Position {
     short_yd: u32,
 }
 
+impl Position {
+    fn default() -> Self {
+        Position {
+            long_today: 0,
+            long_yd: 0,
+            short_today: 0,
+            short_yd: 0,
+        }
+    }
+}
+
 struct LiveBroker {
     api: TraderApi,
     stream: &'static mut TraderSpiStream,
@@ -361,7 +372,14 @@ impl Broker for LiveBroker {
         if get_volume(&pair.0)? > get_volume(&pair.1)? {
             return self.exec_spread((pair.1, pair.0), -qty, open).await;
         }
-        let flag = determine_flag(open, qty, &self.positions[&pair.1])?;
+        let flag = determine_flag(
+            open,
+            qty,
+            &self
+                .positions
+                .entry(pair.0.clone())
+                .or_insert(Position::default()),
+        )?;
         qty = self.submit_order(&pair.0, qty, flag).await?;
         if qty == 0 {
             return None;
