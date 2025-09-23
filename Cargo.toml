@@ -1,3 +1,12 @@
 [workspace]
 members = ["backtest", "ctp"]
 resolver = "2"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+strip = true
+
+[profile.dev]
+incremental = true
