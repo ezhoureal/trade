@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "a": "ag2510",
+    "b": "ag2602",
+    "pos": {
+      "kind": "Long",
+      "entry_z": -2.301596,
+      "entry_bar": 0,
+      "entry_spread": -63.0,
+      "gross_notional": 2784915.0,
+      "size": 9
+    }
+  },
+  {
+    "a": "ag2510",
+    "b": "ag2512",
+    "pos": {
+      "kind": "Long",
+      "entry_z": -3.146007,
+      "entry_bar": 0,
+      "entry_spread": -35.0,
+      "gross_notional": 55940430.0,
+      "size": 182
+    }
+  }
+]

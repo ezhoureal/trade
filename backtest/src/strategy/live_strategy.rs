@@ -27,6 +27,7 @@ impl PairStrategy {
             bar_count: 0,
             trade_log: Vec::new(),
             single_commodity,
+            date: None,
         };
         strategy
             .load_spread_history(df)
@@ -40,6 +41,7 @@ impl PairStrategy {
         current_date: &NaiveDate,
         instrument_expiry: &HashMap<String, NaiveDate>,
     ) {
+        self.date = Some(*current_date);
         // Helper: count trading days (Mon-Fri) between start (exclusive) and end (inclusive of end-1).
         fn trading_days_between(start: NaiveDate, end: NaiveDate) -> u32 {
             if end <= start {

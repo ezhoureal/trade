@@ -3,6 +3,7 @@ mod live_strategy;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use chrono::NaiveDate;
 
 use crate::{
     engine::{Broker, ContractData, ContractsToday, PositionKind},
@@ -19,6 +20,9 @@ pub struct TradeLogEntry {
     pub kind: String,
     pub entry_bar: u32,
     pub exit_bar: u32,
+    // New (live trading): calendar dates
+    pub entry_date: Option<NaiveDate>,
+    pub exit_date: Option<NaiveDate>,
     pub entry_z: f32,
     pub ret: f32,
     pub ret_pct: f32,
@@ -33,6 +37,8 @@ pub struct PairPosition {
     pub kind: PositionKind,
     entry_z: f32,
     entry_bar: u32,
+    // New: entry calendar date (live)
+    entry_date: Option<NaiveDate>,
     entry_spread: f32,
     gross_notional: f32, // exposure at entry (for PnL % calculation)
     pub size: u32,
@@ -46,6 +52,8 @@ pub struct PairStrategy {
     active_positions: SpreadPositions,
     contract_expiry: HashMap<String, u32>,
     bar_count: u32,
+    // Current trading date (None in backtest unless explicitly set)
+    date: Option<NaiveDate>,
     single_commodity: bool,
 }
 
@@ -60,6 +68,7 @@ impl PairStrategy {
             bar_count: 0,
             trade_log: Vec::new(),
             single_commodity,
+            date: None,
         }
     }
 
@@ -150,6 +159,8 @@ impl PairStrategy {
             size: pos.size,
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
+            entry_date: pos.entry_date,
+            exit_date: self.date,
             entry_z: pos.entry_z,
             ret: pnl,
             ret_pct: pnl / pos.gross_notional,
@@ -297,8 +308,9 @@ impl PairStrategy {
                 entry_bar: self.bar_count,
                 entry_spread,
                 entry_z: z,
+                entry_date: self.date,
                 gross_notional: size as f32 * leg_prices,
-                size: size,
+                size,
             },
         );
         Some(())
