@@ -4,25 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.0", features = ["derive", "env"] }
-ctp2rs = { version = "0.1.7", features = ["openctp"] }
+clap = { workspace = true }
+ctp2rs = { workspace = true }
 backtest = { path = "../backtest", features = ["live"] }
-polars = { version = "0.49.0", features = ["lazy", "parquet", "strings"] }
-log = "0.4.22"
-dotenv = "0.15.0"
-env_logger = "0.11.5"
-
-
-rand = "0.8.5"
-chrono = "0.4"
-futures = "0.3.31"
-
-
-tokio = { version = "1.43.1", features = ["full"] }
-anyhow = "1.0.99"
-async-trait = "0.1.89"
+polars = { workspace = true }
+log = { workspace = true }
+dotenv = { workspace = true }
+env_logger = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
 
 [features]
-# Provide empty feature to silence cfg checks used in code.
 ctp_v6_7_11 = []
 history_seed = []
