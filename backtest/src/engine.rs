@@ -98,7 +98,7 @@ pub trait Broker {
         qty_a: i32,
         qty_b: i32,
         open: bool,
-    ) -> Option<u32>;
+    ) -> Option<(u32, u32)>;
 
     fn get_status(&'_ self) -> AccountStatus;
 }
@@ -111,7 +111,7 @@ impl<'a> Broker for Engine<'a> {
         qty_a: i32,
         qty_b: i32,
         open: bool,
-    ) -> Option<u32> {
+    ) -> Option<(u32, u32)> {
         if open {
             self.open(&pair.0, qty_a);
             self.open(&pair.1, qty_b);
@@ -119,7 +119,7 @@ impl<'a> Broker for Engine<'a> {
             self.close(&pair.0, qty_a);
             self.close(&pair.1, qty_b);
         }
-        Some(qty_a.abs() as u32)
+        Some((qty_a.abs() as u32, qty_b.abs() as u32))
     }
 
     fn get_status(&'_ self) -> AccountStatus {

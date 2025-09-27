@@ -367,7 +367,7 @@ impl Broker for LiveBroker {
         qty_a: i32,
         qty_b: i32,
         open: bool,
-    ) -> Option<u32> {
+    ) -> Option<(u32, u32)> {
         // execute the less liquid leg
         if get_volume(&pair.0)? > get_volume(&pair.1)? {
             return self.exec_spread((pair.1, pair.0), qty_b, qty_a, open).await;
@@ -395,7 +395,7 @@ impl Broker for LiveBroker {
             );
             // maybe attempt to revert first order?
         }
-        Some(qty1.abs() as u32)
+        Some((qty1.abs() as u32, qty2.abs() as u32))
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -489,8 +489,8 @@ fn check_position_consistency(broker: &HashMap<String, Position>, strategy: &Spr
             PositionKind::Long => (a, b),
             PositionKind::Short => (b, a),
         };
-        *total_long.entry(long_sym).or_insert(0) += pos.size;
-        *total_short.entry(short_sym).or_insert(0) += pos.size;
+        *total_long.entry(long_sym).or_insert(0) += pos.size_a;
+        *total_short.entry(short_sym).or_insert(0) += pos.size_a;
     }
     for (sym, pos) in broker.iter() {
         let long = total_long.get(sym).cloned().unwrap_or(0);

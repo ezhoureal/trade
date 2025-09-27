@@ -1,26 +1,34 @@
 [
   {
     "a": "ag2510",
-    "b": "ag2602",
-    "pos": {
-      "kind": "Long",
-      "entry_z": -2.301596,
-      "entry_bar": 0,
-      "entry_spread": -63.0,
-      "gross_notional": 2784915.0,
-      "size": 9
-    }
-  },
-  {
-    "a": "ag2510",
     "b": "ag2512",
     "pos": {
       "kind": "Long",
       "entry_z": -3.146007,
       "entry_bar": 0,
+      "entry_date": null,
       "entry_spread": -35.0,
       "gross_notional": 55940430.0,
-      "size": 182
+      "size_a": 182,
+      "size_b": 182,
+      "notional_a": 13924575.0,
+      "notional_b": 11124660.0
+    }
+  },
+  {
+    "a": "ag2510",
+    "b": "ag2602",
+    "pos": {
+      "kind": "Long",
+      "entry_z": -2.301596,
+      "entry_bar": 0,
+      "entry_date": null,
+      "entry_spread": -63.0,
+      "gross_notional": 2784915.0,
+      "size_a": 9,
+      "size_b": 9,
+      "notional_a": 13924575.0,
+      "notional_b": 11124660.0
     }
   }
 ]

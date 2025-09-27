@@ -37,7 +37,7 @@ pub struct PairPosition {
     entry_date: Option<NaiveDate>,
     entry_spread: f32,
     gross_notional: f32, // exposure at entry (for PnL % calculation)
-    pub size: u32,
+    pub size_a: u32,
     pub size_b: u32,
     notional_a: f32,
     notional_b: f32,
@@ -125,31 +125,31 @@ impl PairStrategy {
         reason: &str,
         broker: &mut dyn Broker,
     ) -> Option<()> {
-        let executed_size = futures::executor::block_on(match pos.kind {
+        let (executed_size_a, executed_size_b) = futures::executor::block_on(match pos.kind {
             // Reverse both legs according to position kind
             PositionKind::Long => broker.exec_spread(
                 pair.clone(),
-                -(pos.size as i32), // sell A
+                -(pos.size_a as i32), // sell A
                 pos.size_b as i32,  // buy B
                 false,
             ),
             PositionKind::Short => broker.exec_spread(
                 pair.clone(),
-                pos.size as i32,      // buy A
+                pos.size_a as i32,      // buy A
                 -(pos.size_b as i32), // sell B
                 false,
             ),
         })?;
-        if executed_size != pos.size {
+        if executed_size_a != pos.size_a {
             eprintln!(
                 "Warning: attempted to close size {}, but executed {}",
-                pos.size, executed_size
+                pos.size_a, executed_size_a
             );
         }
         if self.params.debug {
             println!(
                 "Closing {:?} {:?} size {} reason {}",
-                pair, pos.kind, executed_size, reason
+                pair, pos.kind, executed_size_a, reason
             );
         }
 
@@ -157,7 +157,7 @@ impl PairStrategy {
         let pnl_spread = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
-        } * pos.size as f32
+        } * pos.size_a as f32
             * self.params.a.multiplier;
         // Apply per-leg transaction costs on round-trip notional of each leg
         let costs = 2.0
@@ -171,7 +171,7 @@ impl PairStrategy {
                 PositionKind::Long => "long".into(),
                 PositionKind::Short => "short".into(),
             },
-            size: pos.size,
+            size: pos.size_a,
             entry_bar: pos.entry_bar,
             exit_bar: self.bar_count,
             entry_date: pos.entry_date,
@@ -334,13 +334,11 @@ impl PairStrategy {
             PositionKind::Long => (size as i32, -(size_b as i32)),
             PositionKind::Short => (-(size as i32), size_b as i32),
         };
-        let executed_a =
+        let (executed_a, executed_b) =
             futures::executor::block_on(broker.exec_spread(pair.clone(), qty_a, qty_b, true))?;
-        let size = executed_a;
-        let size_b = (size as f32 * self.params.hedge_ratio).round() as u32;
         // compute entry gross notional using both legs
-        let leg_notional_a = contr_a.price * self.params.a.multiplier * size as f32;
-        let leg_notional_b = contr_b.price * self.params.b.multiplier * size_b as f32;
+        let leg_notional_a = contr_a.price * self.params.a.multiplier * executed_a as f32;
+        let leg_notional_b = contr_b.price * self.params.b.multiplier * executed_b as f32;
         let gross_notional = leg_notional_a + leg_notional_b;
 
         self.active_positions.insert(
@@ -352,8 +350,8 @@ impl PairStrategy {
                 entry_z: z,
                 entry_date: self.date,
                 gross_notional,
-                size,
-                size_b,
+                size_a: executed_a,
+                size_b: executed_b,
                 notional_a: leg_notional_a,
                 notional_b: leg_notional_b,
             },
@@ -436,7 +434,7 @@ impl PairStrategy {
                 PositionKind::Long => cur_price - pos.entry_spread,
                 PositionKind::Short => pos.entry_spread - cur_price,
             };
-            let pnl = trade_ret * pos.size as f32 * self.params.a.multiplier;
+            let pnl = trade_ret * pos.size_a as f32 * self.params.a.multiplier;
 
             if pnl < LOSS_RATIO_THRESHOLD * pos.gross_notional {
                 to_close.push(pair.clone());
@@ -490,8 +488,8 @@ mod tests {
             qty_a: i32,
             _qty_b: i32,
             _: bool,
-        ) -> Option<u32> {
-            Some(qty_a.abs() as u32) // assume full execution always
+        ) -> Option<(u32, u32)> {
+            Some((qty_a.abs() as u32, _qty_b.abs() as u32)) // assume full execution always
         }
     }
 
@@ -559,7 +557,7 @@ mod tests {
             "Expected Long position due to negative z"
         );
         // Volume cap: 1% of 10_000 = 100.
-        assert_eq!(pos.size, 100, "Size should respect 1% volume cap");
+        assert_eq!(pos.size_a, 100, "Size should respect 1% volume cap");
     }
 
     #[test]
@@ -728,7 +726,7 @@ mod tests {
 
         // Record entry data for later expected PnL calculation
         let entry_spread = pos_snapshot.entry_spread; // should be last spread (-3.0)
-        let size = pos_snapshot.size as f32; // expected 200 (1% of 20_000)
+        let size = pos_snapshot.size_a as f32; // expected 200 (1% of 20_000)
         let gross_notional = pos_snapshot.gross_notional; // size * (price_a + price_b) at entry
 
         // Add a reverting bar: spread moves back near -1.0 so z will shrink below exit_z
