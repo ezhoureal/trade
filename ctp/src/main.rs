@@ -1,4 +1,4 @@
-use backtest::{params::Params, strategy::PairStrategy};
+use backtest::{params::{Commodity, Params}, strategy::PairStrategy};
 use clap::{Parser, ValueEnum};
 use polars::prelude::*;
 use std::{path::PathBuf, thread};
@@ -170,9 +170,9 @@ fn main() -> PolarsResult<()> {
             exit_z: 0.5,
             expiry_close_days: 3,
             debug: true,
-            commodity_a_prefix: "ag".into(),
-            commodity_b_prefix: "ag".into(),
-            transaction_cost_pct: 0.00005,
+            a: Commodity::default(),
+            b: Commodity::default(),
+            hedge_ratio: 1.0,
         },
         df,
     );

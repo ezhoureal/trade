@@ -8,7 +8,10 @@ use clap::Parser;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 
-use crate::{engine::run_engine, params::Params};
+use crate::{
+    engine::run_engine,
+    params::{Commodity, Params},
+};
 
 #[derive(Serialize, Clone)]
 struct MultiPairResultEntry {
@@ -88,9 +91,15 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
         exit_z: cli.exit_z,
         expiry_close_days: cli.expiry_close_days,
         debug: cli.debug,
-        commodity_a_prefix: a_canon,
-        commodity_b_prefix: b_canon,
-        transaction_cost_pct: 0.00001, // default unless extended CLI adds option
+        a: Commodity {
+            name: a_canon,
+            ..Default::default()
+        },
+        b: Commodity {
+            name: b_canon,
+            ..Default::default()
+        },
+        hedge_ratio: 1.0,
     }
 }
 
@@ -147,8 +156,8 @@ fn test_multiple_pairs(cli: &Cli, collected: Vec<(String, String)>) -> Result<()
         })
         .map(|(params, res)| match res {
             Ok(r) => Ok(MultiPairResultEntry {
-                commodity_a: params.commodity_a_prefix,
-                commodity_b: params.commodity_b_prefix,
+                commodity_a: params.a.name,
+                commodity_b: params.b.name,
                 total_return: r.total_return,
                 sharpe_ratio: r.sharpe_ratio,
                 win_rate: r.win_rate,
@@ -207,7 +216,7 @@ fn test_multiple_pairs(cli: &Cli, collected: Vec<(String, String)>) -> Result<()
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(file_path) = &cli.pairs_file {
-        let pairs =  load_pairs_from_file(file_path)?;
+        let pairs = load_pairs_from_file(file_path)?;
         test_multiple_pairs(&cli, pairs)?;
     } else {
         // test a single pair

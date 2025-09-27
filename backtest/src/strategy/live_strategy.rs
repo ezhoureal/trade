@@ -18,7 +18,7 @@ struct SerializablePosition {
 impl PairStrategy {
     pub fn new_live(params: Params, df: LazyFrame) -> Self {
         use std::collections::HashMap;
-        let single_commodity = params.commodity_a_prefix == params.commodity_b_prefix;
+        let single_commodity = params.a.name == params.b.name;
         let mut strategy = PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -159,10 +159,10 @@ impl PairStrategy {
                 if let Some(price_v) = prices_f.get(row) {
                     let price = price_v as f32;
                     let c_l = contract.to_lowercase();
-                    if c_l.starts_with(&self.params.commodity_a_prefix) {
+                    if c_l.starts_with(&self.params.a.name) {
                         a_contracts.push((contract.to_string(), price));
                     }
-                    if c_l.starts_with(&self.params.commodity_b_prefix) {
+                    if c_l.starts_with(&self.params.b.name) {
                         b_contracts.push((contract.to_string(), price));
                     }
                 }
@@ -194,8 +194,8 @@ mod test {
     #[test]
     fn load_history_cross_prefix_pairs() {
         let mut params = Params::default();
-        params.commodity_a_prefix = "ag".into();
-        params.commodity_b_prefix = "cu".into();
+        params.a.name = "ag".into();
+        params.b.name = "cu".into();
         // 2 days, 2 AG contracts, 2 CU contracts each day -> 4 spreads per day (2x2)
         let df = df!(
             "Date" => &["2025-08-06","2025-08-06","2025-08-06","2025-08-06","2025-08-07","2025-08-07","2025-08-07","2025-08-07"],
@@ -215,8 +215,8 @@ mod test {
     fn load_history_same_prefix_intra_pairs() {
         // Both prefixes identical -> intra commodity pairing
         let mut params = Params::default();
-        params.commodity_a_prefix = "ag".into();
-        params.commodity_b_prefix = "ag".into();
+        params.a.name = "ag".into();
+        params.b.name = "ag".into();
         // Build simple 2 days, 3 contracts per day -> expect 3 unique pair spreads per day (C(3,2)=3)
         let df = df!(
             "Date" => &["2025-08-06", "2025-08-06", "2025-08-06", "2025-08-07", "2025-08-07", "2025-08-07"],

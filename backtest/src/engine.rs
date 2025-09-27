@@ -1,6 +1,6 @@
 use crate::data::{filter_contract_by_prefix, load_market_data, normalize_date_to_bar};
 use crate::params::Params;
-use crate::strategy::{PairStrategy, TradeLogEntry, MARGIN_RATIO, VOLUME_MULTIPLE};
+use crate::strategy::{PairStrategy, TradeLogEntry};
 // use crate::strategy::*;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -92,37 +92,41 @@ pub struct AccountStatus {
 
 #[async_trait]
 pub trait Broker {
-    async fn exec_spread(&mut self, pair: (String, String), qty: i32, open: bool) -> Option<u32>;
+    async fn exec_spread(
+        &mut self,
+        pair: (String, String),
+        qty_a: i32,
+        qty_b: i32,
+        open: bool,
+    ) -> Option<u32>;
 
     fn get_status(&'_ self) -> AccountStatus;
 }
 
 #[async_trait]
 impl<'a> Broker for Engine<'a> {
-    async fn exec_spread(&mut self, pair: (String, String), qty: i32, open: bool) -> Option<u32> {
+    async fn exec_spread(
+        &mut self,
+        pair: (String, String),
+        qty_a: i32,
+        qty_b: i32,
+        open: bool,
+    ) -> Option<u32> {
         if open {
-            self.open(&pair.0, qty);
-            self.open(&pair.1, -qty);
+            self.open(&pair.0, qty_a);
+            self.open(&pair.1, qty_b);
         } else {
-            self.close(&pair.0, qty);
-            self.close(&pair.1, -qty);
+            self.close(&pair.0, qty_a);
+            self.close(&pair.1, qty_b);
         }
-        Some(qty.abs() as u32)
+        Some(qty_a.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {
         AccountStatus {
             cash: self.available,
             equity: self.equity,
-            gross_exposure: self
-                .open_positions
-                .iter()
-                .filter_map(|((symbol, _), pos)| {
-                    self.current_price
-                        .get(symbol)
-                        .map(|price| price * pos.size as f32 * VOLUME_MULTIPLE)
-                })
-                .sum(),
+            gross_exposure: 0.0, // TODO
         }
     }
 }
@@ -142,9 +146,28 @@ impl<'a> Engine<'a> {
         }
     }
 
+    // per-commodity attributes are read at call sites to avoid borrow conflicts
+
     fn open(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        let price = self.current_price.get(symbol)?;
-        let real_volume = qty as f32 * VOLUME_MULTIPLE;
+        let price = *self.current_price.get(symbol)?;
+        // Read needed commodity attributes as copies to avoid holding borrows across mutable ops
+        let is_a = symbol.starts_with(&self.params.a.name);
+        let multiplier = if is_a {
+            self.params.a.multiplier
+        } else {
+            self.params.b.multiplier
+        };
+        let margin_ratio = if is_a {
+            self.params.a.margin_ratio
+        } else {
+            self.params.b.margin_ratio
+        };
+        let cost_pct = if is_a {
+            self.params.a.transaction_cost
+        } else {
+            self.params.b.transaction_cost
+        };
+        let real_volume_abs = qty.abs() as f32 * multiplier;
         if self.available < 0.0 {
             println!("Warning: Cash balance negative after trade on {} qty {} at price {:.2}. balance = {:.2}", symbol, qty, price, self.available);
         }
@@ -159,10 +182,11 @@ impl<'a> Engine<'a> {
         pos.size += qty_abs;
         pos.entry_price = total_value / pos.size as f32;
 
-        let margin = price * real_volume.abs() * MARGIN_RATIO;
+        let margin = price * real_volume_abs * margin_ratio;
         pos.margin += margin;
 
-        let transaction_cost = price * real_volume.abs() * self.params.transaction_cost_pct;
+        // Apply per-leg transaction cost: infer commodity from symbol prefix
+        let transaction_cost = price * real_volume_abs * cost_pct;
         self.available -= margin + transaction_cost;
         self.balance -= transaction_cost;
 
@@ -173,9 +197,21 @@ impl<'a> Engine<'a> {
     }
 
     fn close(&mut self, symbol: &str, qty: i32) -> Option<i32> {
-        let price = self.current_price.get(symbol)?;
+        let price = *self.current_price.get(symbol)?;
         let is_long = qty < 0;
         let key = (symbol.to_string(), is_long);
+        // Read needed commodity attributes as copies before taking mutable borrow
+        let is_a = symbol.starts_with(&self.params.a.name);
+        let multiplier = if is_a {
+            self.params.a.multiplier
+        } else {
+            self.params.b.multiplier
+        };
+        let cost_pct = if is_a {
+            self.params.a.transaction_cost
+        } else {
+            self.params.b.transaction_cost
+        };
         let pos = self.open_positions.get_mut(&key)?;
         let qty_abs = qty.abs() as u32;
         if qty_abs > pos.size {
@@ -185,7 +221,7 @@ impl<'a> Engine<'a> {
             );
             return None;
         }
-        let real_volume = qty_abs as f32 * VOLUME_MULTIPLE;
+        let real_volume = qty_abs as f32 * multiplier;
         let pnl = if is_long {
             price - pos.entry_price
         } else {
@@ -203,7 +239,7 @@ impl<'a> Engine<'a> {
             self.open_positions.remove(&key);
         }
 
-        let transaction_cost = price * real_volume.abs() * self.params.transaction_cost_pct;
+        let transaction_cost = price * real_volume.abs() * cost_pct;
         self.available += pnl + margin - transaction_cost;
         self.balance += pnl - transaction_cost;
         Some(qty)
@@ -216,7 +252,7 @@ impl<'a> Engine<'a> {
     ) -> Result<(Vec<ContractData>, Vec<ContractData>)> {
         let mut a_contracts: Vec<ContractData> = Vec::new();
         let mut b_contracts: Vec<ContractData> = Vec::new();
-        let same_prefix = self.params.commodity_a_prefix == self.params.commodity_b_prefix;
+        let same_prefix = self.params.a.name == self.params.b.name;
         // Filter rows where Bar == day
         let mask = df.column("Bar")?.u32()?.equal(day);
         let today_df = df.filter(&mask)?;
@@ -236,12 +272,10 @@ impl<'a> Engine<'a> {
             };
             if same_prefix {
                 a_contracts.push(contract_data);
-            } else {
-                if contract.starts_with(&self.params.commodity_a_prefix) {
-                    a_contracts.push(contract_data);
-                } else {
-                    b_contracts.push(contract_data);
-                }
+            } else if contract.starts_with(&self.params.a.name) {
+                a_contracts.push(contract_data);
+            } else if contract.starts_with(&self.params.b.name) {
+                b_contracts.push(contract_data);
             }
         }
         if same_prefix {
@@ -256,13 +290,22 @@ impl<'a> Engine<'a> {
             .open_positions
             .iter()
             .filter_map(|((symbol, is_long), pos)| {
-                self.current_price
-                    .get(symbol)
-                    .map(|price| if *is_long {
+                self.current_price.get(symbol).map(|price_ref| {
+                    let price = *price_ref;
+                    let is_a = symbol.starts_with(&self.params.a.name);
+                    let mult = if is_a {
+                        self.params.a.multiplier
+                    } else {
+                        self.params.b.multiplier
+                    };
+                    let vol = pos.size as f32 * mult;
+                    let diff = if *is_long {
                         price - pos.entry_price
                     } else {
                         pos.entry_price - price
-                    } * pos.size as f32 * VOLUME_MULTIPLE)
+                    };
+                    diff * vol
+                })
             })
             .sum();
         self.equity = self.balance + pnl;
@@ -375,7 +418,7 @@ fn calc_sharpe(equity_curve: &[f32]) -> f32 {
 pub fn run_engine(path: &str, params: &Params) -> Result<BackTestResult> {
     let df = load_market_data(path)?;
     // Filter the market data to only include contracts with the specified prefixes
-    let df = filter_contract_by_prefix(df, &params.commodity_a_prefix, &params.commodity_b_prefix)?;
+    let df = filter_contract_by_prefix(df, &params.a.name, &params.b.name)?;
     let df = normalize_date_to_bar(df)?;
     if params.debug {
         println!(
@@ -395,15 +438,22 @@ mod tests {
     use crate::params::Params;
 
     fn test_params() -> Params {
+        use crate::params::Commodity;
+        let mut a = Commodity::default();
+        a.name = "A".into();
+        a.transaction_cost = 0.0;
+        let mut b = Commodity::default();
+        b.name = "B".into();
+        b.transaction_cost = 0.0;
         Params {
             lookback_zscore: 5,
             entry_z: 2.0,
             exit_z: 0.5,
             expiry_close_days: 5,
             debug: false,
-            commodity_a_prefix: "A".into(),
-            commodity_b_prefix: "B".into(),
-            transaction_cost_pct: 0.0,
+            a,
+            b,
+            hedge_ratio: 1.0,
         }
     }
 
@@ -509,15 +559,22 @@ mod tests {
     #[test]
     fn prepare_data_today_same_prefix_duplicates_sets() {
         // Build a tiny DataFrame with three contracts of same commodity prefix
+        use crate::params::Commodity;
+        let mut a = Commodity::default();
+        a.name = "AG".into();
+        a.transaction_cost = 0.0;
+        let mut b = Commodity::default();
+        b.name = "AG".into();
+        b.transaction_cost = 0.0;
         let params = Params {
             lookback_zscore: 5,
             entry_z: 2.0,
             exit_z: 0.5,
             expiry_close_days: 5,
             debug: false,
-            commodity_a_prefix: "AG".into(),
-            commodity_b_prefix: "AG".into(), // same prefix
-            transaction_cost_pct: 0.0,
+            a,
+            b, // same prefix
+            hedge_ratio: 1.0,
         };
         let engine = Engine::new(&params);
         // Construct a DataFrame manually using the df! macro

@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use backtest::{
     engine::{AccountStatus, Broker, ContractData, PositionKind},
-    strategy::{PairStrategy, SpreadPositions, MARGIN_RATIO, VOLUME_MULTIPLE},
+    strategy::{PairStrategy, SpreadPositions},
 };
 use ctp2rs::ffi::{AssignFromString, WrapToString};
 use ctp2rs::v1alpha1::TraderSpiEvent::*;
@@ -191,12 +191,11 @@ impl LiveBroker {
         }
         let price = get_price(symbol)?;
         println!(
-            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cost = {}, cash = {}",
+            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cash = {}",
             symbol,
             qty,
             offset_flag == THOST_FTDC_OF_Open,
             price,
-            price * qty.abs() as f32 * (MARGIN_RATIO * VOLUME_MULTIPLE + 0.00005),
             self.cash
         );
         let mut order = self.order_default(symbol, qty);
@@ -365,36 +364,38 @@ impl Broker for LiveBroker {
     async fn exec_spread(
         &mut self,
         pair: (String, String),
-        mut qty: i32,
+        qty_a: i32,
+        qty_b: i32,
         open: bool,
     ) -> Option<u32> {
         // execute the less liquid leg
         if get_volume(&pair.0)? > get_volume(&pair.1)? {
-            return self.exec_spread((pair.1, pair.0), -qty, open).await;
+            return self.exec_spread((pair.1, pair.0), qty_b, qty_a, open).await;
         }
         let flag = determine_flag(
             open,
-            qty,
+            qty_a,
             &self
                 .positions
                 .entry(pair.0.clone())
                 .or_insert(Position::default()),
         )?;
-        qty = self.submit_order(&pair.0, qty, flag).await?;
-        if qty == 0 {
+        let qty1 = self.submit_order(&pair.0, qty_a, flag).await?;
+        if qty1 == 0 {
             return None;
         }
 
-        // only need to determine flag once, since flags always match for both legs
-        let qty2 = self.submit_order(&pair.1, -qty, flag).await?;
-        if qty2 != qty {
+        // scale down qty_b according to the actual qty1 executed
+        let scaled_qty_b = (qty_b as f64 * qty1 as f64 / qty_a.abs() as f64).round() as i32;
+        let qty2 = self.submit_order(&pair.1, scaled_qty_b, flag).await?;
+        if qty2 != qty1 {
             println!(
                 "warning: filled qty not match for spread legs: {}, {}",
-                qty, qty2
+                qty1, qty2
             );
             // maybe attempt to revert first order?
         }
-        Some(qty.abs() as u32)
+        Some(qty1.abs() as u32)
     }
 
     fn get_status(&'_ self) -> AccountStatus {

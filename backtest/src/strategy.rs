@@ -1,18 +1,14 @@
 mod live_strategy;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use chrono::NaiveDate;
 
 use crate::{
     engine::{Broker, ContractData, ContractsToday, PositionKind},
     params::Params,
 };
-
-// based on ag
-pub static MARGIN_RATIO: f32 = 0.14;
-pub static VOLUME_MULTIPLE: f32 = 15.0;
 
 #[derive(Debug, Serialize)]
 pub struct TradeLogEntry {
@@ -42,6 +38,9 @@ pub struct PairPosition {
     entry_spread: f32,
     gross_notional: f32, // exposure at entry (for PnL % calculation)
     pub size: u32,
+    pub size_b: u32,
+    notional_a: f32,
+    notional_b: f32,
 }
 
 pub type SpreadPositions = HashMap<(String, String), PairPosition>;
@@ -59,7 +58,7 @@ pub struct PairStrategy {
 
 impl PairStrategy {
     pub fn new(params: Params, contract_expiry: HashMap<String, u32>) -> Self {
-        let single_commodity = params.commodity_a_prefix == params.commodity_b_prefix;
+        let single_commodity = params.a.name == params.b.name;
         PairStrategy {
             params,
             spread_histories: HashMap::new(),
@@ -86,7 +85,8 @@ impl PairStrategy {
                 if contr_a.name == contr_b.name {
                     continue;
                 }
-                let spread = contr_a.price - contr_b.price;
+                // Hedge-adjusted spread: A - hedge_ratio * B
+                let spread = contr_a.price - self.params.hedge_ratio * contr_b.price;
                 self.push_spread((contr_a.name.clone(), contr_b.name.clone()), spread);
             }
         }
@@ -126,8 +126,19 @@ impl PairStrategy {
         broker: &mut dyn Broker,
     ) -> Option<()> {
         let executed_size = futures::executor::block_on(match pos.kind {
-            PositionKind::Long => broker.exec_spread(pair.clone(), -(pos.size as i32), false),
-            PositionKind::Short => broker.exec_spread(pair.clone(), pos.size as i32, false),
+            // Reverse both legs according to position kind
+            PositionKind::Long => broker.exec_spread(
+                pair.clone(),
+                -(pos.size as i32), // sell A
+                pos.size_b as i32,  // buy B
+                false,
+            ),
+            PositionKind::Short => broker.exec_spread(
+                pair.clone(),
+                pos.size as i32,      // buy A
+                -(pos.size_b as i32), // sell B
+                false,
+            ),
         })?;
         if executed_size != pos.size {
             eprintln!(
@@ -143,12 +154,16 @@ impl PairStrategy {
         }
 
         let cur_price = self.cur_price(&pair)?;
-        let pnl = match pos.kind {
+        let pnl_spread = match pos.kind {
             PositionKind::Long => cur_price - pos.entry_spread,
             PositionKind::Short => pos.entry_spread - cur_price,
         } * pos.size as f32
-            * VOLUME_MULTIPLE
-            - self.params.transaction_cost_pct * pos.gross_notional * 2.0;
+            * self.params.a.multiplier;
+        // Apply per-leg transaction costs on round-trip notional of each leg
+        let costs = 2.0
+            * (self.params.a.transaction_cost * pos.notional_a
+                + self.params.b.transaction_cost * pos.notional_b);
+        let pnl = pnl_spread - costs;
 
         let entry = TradeLogEntry {
             pair: format!("{}/{}", pair.0, pair.1),
@@ -163,7 +178,11 @@ impl PairStrategy {
             exit_date: self.date,
             entry_z: pos.entry_z,
             ret: pnl,
-            ret_pct: pnl / pos.gross_notional,
+            ret_pct: if pos.gross_notional > 0.0 {
+                pnl / pos.gross_notional
+            } else {
+                0.0
+            },
             entry_spread: pos.entry_spread,
             exit_spread: cur_price,
             reason: reason.into(),
@@ -215,8 +234,14 @@ impl PairStrategy {
         let mut to_close: Vec<(String, String)> = Vec::new();
         for (pair, _pos) in self.active_positions.iter() {
             let hist = self.spread_histories.get(pair)?;
+            if self.params.debug {
+                println!("{:?}: {:?}", pair, hist);
+            }
             if hist.len() >= self.params.lookback_zscore {
                 let z = self.calc_z(hist)?;
+                if self.params.debug {
+                    println!("  z={:.3}", z);
+                }
                 if z.abs() <= self.params.exit_z || z.abs() > self.params.entry_z * 2.0 {
                     to_close.push(pair.clone());
                 }
@@ -281,9 +306,12 @@ impl PairStrategy {
         if status.cash < 0.0 {
             return Some(()); // skip trading when positions are already large
         }
-        let leg_prices = (contr_a.price + contr_b.price) * VOLUME_MULTIPLE;
-        let cost = leg_prices * (MARGIN_RATIO + self.params.transaction_cost_pct);
-        let mut size: u32 = (status.cash.min(status.equity) / cost).floor() as u32;
+        let cost_a = contr_a.price * self.params.a.multiplier * self.params.a.margin_ratio;
+        let cost_b = contr_b.price
+            * self.params.b.multiplier
+            * self.params.b.margin_ratio
+            * self.params.hedge_ratio;
+        let mut size: u32 = (status.cash.min(status.equity) / (cost_a + cost_b)).floor() as u32;
 
         let vol_cap = contr_a.volume.min(contr_b.volume) as f32 * 0.01; // 1% of lesser volume
         let vol_cap_u = vol_cap.floor() as u32;
@@ -296,10 +324,24 @@ impl PairStrategy {
             println!("Entering {:?} {:?} size {} z={:.3}", pair, kind, size, z);
         }
         let entry_spread = self.cur_price(&pair)?;
-        size = futures::executor::block_on(match kind {
-            PositionKind::Long => broker.exec_spread(pair.clone(), size as i32, true),
-            PositionKind::Short => broker.exec_spread(pair.clone(), -(size as i32), true),
-        })?;
+        // Determine per-leg sizes using hedge ratio
+        let size_b = (size as f32 * self.params.hedge_ratio).floor() as u32;
+        if size_b == 0 {
+            println!("size_b = 0 while size_a = {}", size);
+            return None;
+        }
+        let (qty_a, qty_b) = match kind {
+            PositionKind::Long => (size as i32, -(size_b as i32)),
+            PositionKind::Short => (-(size as i32), size_b as i32),
+        };
+        let executed_a =
+            futures::executor::block_on(broker.exec_spread(pair.clone(), qty_a, qty_b, true))?;
+        let size = executed_a;
+        let size_b = (size as f32 * self.params.hedge_ratio).round() as u32;
+        // compute entry gross notional using both legs
+        let leg_notional_a = contr_a.price * self.params.a.multiplier * size as f32;
+        let leg_notional_b = contr_b.price * self.params.b.multiplier * size_b as f32;
+        let gross_notional = leg_notional_a + leg_notional_b;
 
         self.active_positions.insert(
             pair,
@@ -309,8 +351,11 @@ impl PairStrategy {
                 entry_spread,
                 entry_z: z,
                 entry_date: self.date,
-                gross_notional: size as f32 * leg_prices,
+                gross_notional,
                 size,
+                size_b,
+                notional_a: leg_notional_a,
+                notional_b: leg_notional_b,
             },
         );
         Some(())
@@ -391,7 +436,7 @@ impl PairStrategy {
                 PositionKind::Long => cur_price - pos.entry_spread,
                 PositionKind::Short => pos.entry_spread - cur_price,
             };
-            let pnl = trade_ret * pos.size as f32 * VOLUME_MULTIPLE;
+            let pnl = trade_ret * pos.size as f32 * self.params.a.multiplier;
 
             if pnl < LOSS_RATIO_THRESHOLD * pos.gross_notional {
                 to_close.push(pair.clone());
@@ -439,8 +484,14 @@ mod tests {
             }
         }
 
-        async fn exec_spread(&mut self, _: (String, String), qty: i32, _: bool) -> Option<u32> {
-            Some(qty.abs() as u32) // assume full execution always
+        async fn exec_spread(
+            &mut self,
+            _: (String, String),
+            qty_a: i32,
+            _qty_b: i32,
+            _: bool,
+        ) -> Option<u32> {
+            Some(qty_a.abs() as u32) // assume full execution always
         }
     }
 
@@ -470,7 +521,9 @@ mod tests {
 
     #[test]
     fn enters_long_position_on_negative_extreme_z() {
-        let params = Params::default();
+        let mut params = Params::default();
+        params.a.name = "A".into();
+        params.b.name = "B".into();
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
@@ -511,7 +564,9 @@ mod tests {
 
     #[test]
     fn reversion_closes_position() {
-        let params = Params::default();
+        let mut params = Params::default();
+        params.a.name = "A".into();
+        params.b.name = "B".into();
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
         expiry.insert("B1".into(), 50);
@@ -554,6 +609,8 @@ mod tests {
     #[test]
     fn stop_loss_triggers_for_short_position() {
         let mut params = Params::default();
+        params.a.name = "A".into();
+        params.b.name = "B".into();
         params.entry_z = 1.5; // ensure entry on positive outlier
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
@@ -598,7 +655,9 @@ mod tests {
 
     #[test]
     fn expiry_forces_close() {
-        let params = Params::default();
+        let mut params = Params::default();
+        params.a.name = "A".into();
+        params.b.name = "B".into();
         // Expiry on day 10, close window 3 -> any bar with cur_day >= 7 triggers force close.
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 10);
@@ -629,10 +688,13 @@ mod tests {
 
     #[test]
     fn close_applies_transaction_costs() {
-        // Params with non-zero transaction cost
+        // Params with non-zero transaction cost per commodity
         let mut params = Params::default();
-        params.transaction_cost_pct = 0.001; // 10 bps per leg
-                                             // Ensure exit_z low enough to force exit after outlier reverts
+        params.a.name = "A".into();
+        params.b.name = "B".into();
+        params.a.transaction_cost = 0.001;
+        params.b.transaction_cost = 0.001;
+        // Ensure exit_z low enough to force exit after outlier reverts
         params.exit_z = 0.5;
         let mut expiry: HashMap<String, u32> = HashMap::new();
         expiry.insert("A1".into(), 50);
@@ -689,9 +751,10 @@ mod tests {
 
         // Expected gross PnL: (exit_spread - entry_spread) * size  (Long position)
         // entry_spread ≈ -3.0, exit_spread ≈ -1.0 => diff = 2.0
-        let expected_gross = (trade.exit_spread - entry_spread) * size * VOLUME_MULTIPLE; // 2.0 * size
-                                                                                          // Costs: 2 * transaction_cost_pct * gross_notional
-        let expected_costs = 2.0 * params.transaction_cost_pct * gross_notional;
+        let expected_gross = (trade.exit_spread - entry_spread) * size * params.a.multiplier; // 2.0 * size
+                                                                                              // Costs: 2 * transaction_cost_pct * gross_notional
+        let expected_costs =
+            2.0 * (params.a.transaction_cost + params.b.transaction_cost) * 0.5 * gross_notional;
         let expected_net = expected_gross - expected_costs;
 
         // Allow tiny float tolerance
