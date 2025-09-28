@@ -533,6 +533,7 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
     loop {
         check_position_consistency(&broker.positions, &strategy.get_positions());
 
+        let contracts = snapshot_contracts();
         // prevent deadlock, as strategy.trade calls broker.exec_spread which is async
         tokio::task::block_in_place(|| {
             strategy.trade(0, contracts.clone(), contracts.clone(), &mut broker)

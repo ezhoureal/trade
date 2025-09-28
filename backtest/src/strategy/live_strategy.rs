@@ -1,4 +1,5 @@
 use super::PairStrategy;
+use crate::params::Commodity;
 use crate::params::Params;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use polars::prelude::*;
@@ -14,7 +15,6 @@ struct SerializablePosition {
     pos: super::PairPosition,
 }
 
-#[cfg(feature = "live")]
 impl PairStrategy {
     pub fn new_live(params: Params, df: LazyFrame) -> Self {
         use std::collections::HashMap;
@@ -71,6 +71,12 @@ impl PairStrategy {
         for (_, history) in self.spread_histories.iter_mut() {
             history.pop_back();
         }
+    }
+
+    pub fn update_commodity_spec(&mut self, a: Commodity, b: Commodity) {
+        self.params.a = a;
+        self.params.b = b;
+        self.single_commodity = self.params.a.name == self.params.b.name;
     }
 
     pub(super) fn append_log(&self, log_entry: super::TradeLogEntry) {
