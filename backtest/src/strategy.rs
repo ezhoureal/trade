@@ -325,9 +325,8 @@ impl PairStrategy {
         }
         let entry_spread = self.cur_price(&pair)?;
         // Determine per-leg sizes using hedge ratio
-        let size_b = (size as f32 * self.params.hedge_ratio).floor() as u32;
+        let size_b = (size as f32 * self.params.hedge_ratio).round() as u32;
         if size_b == 0 {
-            println!("size_b = 0 while size_a = {}", size);
             return None;
         }
         let (qty_a, qty_b) = match kind {

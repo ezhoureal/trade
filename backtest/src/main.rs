@@ -7,6 +7,9 @@ use anyhow::Result;
 use clap::Parser;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::{
     engine::run_engine,
@@ -78,12 +81,56 @@ struct Cli {
     out: Option<String>,
 }
 
+static AVG_PRICE_CACHE: OnceLock<HashMap<String, f64>> = OnceLock::new();
+
+fn get_avg_prices(cli: &Cli) -> &'static HashMap<String, f64> {
+    AVG_PRICE_CACHE.get_or_init(|| {
+        let data_path = Path::new(&cli.data);
+        let dir = if data_path.is_dir() {
+            data_path
+        } else {
+            data_path.parent().unwrap_or(Path::new("."))
+        };
+        let path = dir.join("commodity_average_prices.json");
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match serde_json::from_str::<HashMap<String, f64>>(&contents) {
+                Ok(map) => map,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to parse averages JSON at {}: {}",
+                        path.display(),
+                        e
+                    );
+                    HashMap::new()
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to read averages JSON at {}: {}",
+                    path.display(),
+                    e
+                );
+                HashMap::new()
+            }
+        }
+    })
+}
+
 fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
     // Canonicalize ordering so (a,b) and (b,a) yield identical strategy behavior.
     let (a_canon, b_canon) = if a <= b {
         (a.to_string(), b.to_string())
     } else {
         (b.to_string(), a.to_string())
+    };
+    // Compute hedge ratio using average prices if available: h = avg_price(A) / avg_price(B)
+    // This aligns size of B to approximate equal notional with A.
+    let avg = get_avg_prices(cli);
+    let a_key = a_canon.to_lowercase();
+    let b_key = b_canon.to_lowercase();
+    let hedge_ratio = match (avg.get(&a_key), avg.get(&b_key)) {
+        (Some(&pa), Some(&pb)) if pb > 0.0 && pa.is_finite() && pb.is_finite() => (pa / pb) as f32,
+        _ => 1.0,
     };
     Params {
         lookback_zscore: cli.lookback_zscore,
@@ -99,7 +146,7 @@ fn build_params(cli: &Cli, a: &str, b: &str) -> Params {
             name: b_canon,
             ..Default::default()
         },
-        hedge_ratio: 1.0,
+        hedge_ratio,
     }
 }
 
