@@ -141,6 +141,24 @@ def seed_historical(symbol, limit=150):
 LAST_ORDER_TS = None
 COOLDOWN_SECONDS = 30  # don't flood orders
 
+def calc_macd_signal(macd_hist):
+    if len(macd_hist) < 2:
+        return 0
+    macd_hist_last = macd_hist.iloc[-1]
+    macd_hist_prev = macd_hist.iloc[-2]
+    macd_cross_up = (macd_hist_prev < 0) and (macd_hist_last > 0)
+    macd_cross_down = (macd_hist_prev > 0) and (macd_hist_last < 0)
+
+    macd_bullish = macd_cross_up or (macd_hist_last > macd_hist_prev and macd_hist_prev < -0.2)
+    macd_bearish = macd_cross_down or (macd_hist_last < macd_hist_prev and macd_hist_prev > 0.2)
+
+    if macd_bullish:
+        return 1
+    elif macd_bearish:
+        return -1
+    else:
+        return 0
+
 def evaluate_and_trade():
     global bars, LAST_ORDER_TS
     if len(bars) < 30:
@@ -153,25 +171,22 @@ def evaluate_and_trade():
 
     # --- Compute indicators ---
     rsi = compute_rsi(close, period=14).iloc[-1]
+    rsi_signal = 1 if rsi < 20 else (-1 if rsi > 80 else 0)
 
     macd_line, macd_signal, macd_hist = compute_macd(close)
-    macd_hist_last = macd_hist.iloc[-1]
-    macd_cross_up = (macd_hist.iloc[-2] < 0) and (macd_hist_last > 0) if len(macd_hist) >= 2 else False
-    macd_cross_down = (macd_hist.iloc[-2] > 0) and (macd_hist_last < 0) if len(macd_hist) >= 2 else False
+    macd_signal_state = calc_macd_signal(macd_hist)
 
     K, D, J = compute_kdj(high, low, close)
     k_last = K.iloc[-1]
     d_last = D.iloc[-1]
+    kdj_signal = 1 if k_last > d_last else (-1 if k_last < d_last else 0)
 
     vol_mean = vol.rolling(window=20, min_periods=10).mean().iloc[-1]
     vol_last = vol.iloc[-1]
     vol_spike = (vol_mean > 0) and (vol_last > vol_mean * 1.5)
+    macd_last = macd_hist.iloc[-1]
+    volume_signal = 1 if vol_spike and macd_last > 0 else (-1 if vol_spike and macd_last < 0 else 0)
 
-    # --- Individual signals (each returns +1 for bullish, -1 for bearish, 0 if neutral) ---
-    rsi_signal = 1 if rsi < 35 else (-1 if rsi > 65 else 0)
-    macd_signal_state = 1 if macd_cross_up else (-1 if macd_cross_down else 0)
-    kdj_signal = 1 if k_last > d_last else (-1 if k_last < d_last else 0)
-    volume_signal = 1 if vol_spike and macd_hist_last > 0 else (-1 if vol_spike and macd_hist_last < 0 else 0)
     # --- Combine signals ---
     signals = [rsi_signal, macd_signal_state, kdj_signal, volume_signal]
     bullish_count = signals.count(1)
@@ -195,7 +210,7 @@ def evaluate_and_trade():
         positions[symbol] = p
     has_position = SYMBOL in positions
 
-    print(f"[{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_hist_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike}")
+    print(f"[{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike}")
 
     try:
         if buy_signal and not has_position:
@@ -247,8 +262,6 @@ def run_stream():
     if not API_KEY or not API_SECRET:
         raise RuntimeError("Set APCA_API_KEY_ID and APCA_API_SECRET_KEY in .env")
     stream = StockDataStream(API_KEY, API_SECRET)
-    # subscribe to 1Min bars for SYMBOL (note: depending on alpaca-py version the API may vary)
-    # We'll attempt to subscribe to "bars" channel
     try:
         async def handle_bar(bar):
             if isinstance(bar, Bar):
@@ -256,7 +269,6 @@ def run_stream():
             else:
                 print("[stream] received non-Bar data:", bar)
 
-        # subscribe
         stream.subscribe_bars(handle_bar, SYMBOL)
 
         print("[stream] starting stream for", SYMBOL)
