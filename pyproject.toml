@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "akshare>=1.17.52",
+    "alpaca-py>=0.42.2",
+    "dotenv>=0.9.9",
     "fastparquet>=2024.11.0",
     "ib-insync>=0.9.86",
     "openpyxl>=3.1.5",
