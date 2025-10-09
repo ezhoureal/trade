@@ -262,12 +262,14 @@ def run_stream():
     stream = StockDataStream(API_KEY, API_SECRET)
     try:
         async def handle_bar(bar):
+            print(f'received bar: {bar}')
             if isinstance(bar, Bar):
                 on_trade_update(bar)
             else:
                 print("[stream] received non-Bar data:", bar)
 
         stream.subscribe_bars(handle_bar, SYMBOL)
+        stream.subscribe_updated_bars(handle_bar, SYMBOL)
 
         print("[stream] starting stream for", SYMBOL)
         stream.run()  # blocking (runs forever)
