@@ -20,9 +20,9 @@ from alpaca.data.models import BarSet, Bar
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.models import Position, Order
+from alpaca.trading.models import Order
 from alpaca.common.types import RawData
 
 # load env
@@ -146,11 +146,11 @@ def calc_macd_signal(macd_hist):
         return 0
     macd_hist_last = macd_hist.iloc[-1]
     macd_hist_prev = macd_hist.iloc[-2]
-    macd_cross_up = (macd_hist_prev < 0) and (macd_hist_last > 0)
-    macd_cross_down = (macd_hist_prev > 0) and (macd_hist_last < 0)
+    # macd_cross_up = (macd_hist_prev < 0) and (macd_hist_last > 0)
+    # macd_cross_down = (macd_hist_prev > 0) and (macd_hist_last < 0)
 
-    macd_bullish = macd_cross_up or (macd_hist_last > macd_hist_prev and macd_hist_prev < -0.2)
-    macd_bearish = macd_cross_down or (macd_hist_last < macd_hist_prev and macd_hist_prev > 0.2)
+    macd_bullish = macd_hist_last > macd_hist_prev and macd_hist_prev < -0.2
+    macd_bearish = macd_hist_last < macd_hist_prev and macd_hist_prev > 0.2
 
     if macd_bullish:
         return 1
@@ -174,7 +174,7 @@ def evaluate_and_trade():
     rsi_signal = 1 if rsi < 20 else (-1 if rsi > 80 else 0)
 
     macd_line, macd_signal, macd_hist = compute_macd(close)
-    macd_signal_state = calc_macd_signal(macd_hist)
+    macd_signal = calc_macd_signal(macd_hist)
 
     K, D, J = compute_kdj(high, low, close)
     k_last = K.iloc[-1]
@@ -188,17 +188,11 @@ def evaluate_and_trade():
     volume_signal = 1 if vol_spike and macd_last > 0 else (-1 if vol_spike and macd_last < 0 else 0)
 
     # --- Combine signals ---
-    signals = [rsi_signal, macd_signal_state, kdj_signal, volume_signal]
+    signals = [rsi_signal, macd_signal, kdj_signal, volume_signal]
     bullish_count = signals.count(1)
     bearish_count = signals.count(-1)
     buy_signal = bullish_count >= 3
     sell_signal = bearish_count >= 3
-
-    # check cooldown
-    now_ts = time.time()
-    if LAST_ORDER_TS and (now_ts - LAST_ORDER_TS) < COOLDOWN_SECONDS:
-        # in cooldown
-        return
 
     account = trading_client.get_account()
     raw_positions = trading_client.get_all_positions()
@@ -210,31 +204,35 @@ def evaluate_and_trade():
         positions[symbol] = p
     has_position = SYMBOL in positions
 
-    print(f"[{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike}")
-
+    if buy_signal or sell_signal:
+        print(f"high: {high.iloc[-1]:.2f}, low: {low.iloc[-1]:.2f} [{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike} (signals rsi={rsi_signal} macd={macd_signal} kdj={kdj_signal} vol={volume_signal})")
     try:
-        if buy_signal and not has_position:
+        if buy_signal:
             # compute qty
             last_price = close.iloc[-1]
             qty = compute_order_qty(last_price, account)
             if qty <= 0:
-                print("[trade] qty==0, skipping buy (insufficient allocation)")
+                # print("[trade] qty==0, skipping buy (insufficient allocation)")
                 return
-            print(f"[trade] BUY signal. Sending market buy order for {qty} {SYMBOL} at ~{last_price}")
-            order_data = MarketOrderRequest(symbol=SYMBOL, qty=qty, limit_price=last_price, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
-            order = ensure_order(trading_client.submit_order(order_data))
+            print(f"[trade] BUY signal. Sending limit buy order for {qty} {SYMBOL} at ~{last_price}")
+            order_data = LimitOrderRequest(symbol=SYMBOL, qty=qty, limit_price=last_price, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+            ensure_order(trading_client.submit_order(order_data))
             LAST_ORDER_TS = time.time()
-            print("[trade] buy order submitted:", order.id)
         elif sell_signal and has_position:
             pos = positions[SYMBOL]
             qty = abs(int(float(pos.qty)))
             if qty <= 0:
                 return
-            print(f"[trade] SELL signal. Closing position of {qty} {SYMBOL}")
-            order_data = MarketOrderRequest(symbol=SYMBOL, qty=qty, limit_price=close.iloc[-1], side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
-            order = ensure_order(trading_client.submit_order(order_data))
+            # Only allow closing if profitable (never exit at a loss)
+            last_price = close.iloc[-1]
+            entry_price = float(getattr(pos, "avg_entry_price", 0) or 0)
+            if entry_price > 0 and last_price <= entry_price:
+                # print(f"[trade] SELL signal ignored: unrealized loss (last={last_price:.2f} entry={entry_price:.2f})")
+                return
+            print(f"[trade] SELL signal. Closing position of {qty} {SYMBOL} at price ~{close.iloc[-1]}")
+            order_data = LimitOrderRequest(symbol=SYMBOL, qty=qty, limit_price=close.iloc[-1], side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+            ensure_order(trading_client.submit_order(order_data))
             LAST_ORDER_TS = time.time()
-            print("[trade] sell order submitted:", order.id)
     except Exception as e:
         print("[error] trading error:", e)
 
