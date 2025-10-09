@@ -16,13 +16,13 @@ from dotenv import load_dotenv
 # Alpaca SDK
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
-from alpaca.data.models import BarSet, Bar
+from alpaca.data.models import BarSet, Bar, Trade
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import LimitOrderRequest
+from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.models import Order
+from alpaca.trading.models import Order, Position
 from alpaca.common.types import RawData
 
 # load env
@@ -141,6 +141,9 @@ def seed_historical(symbol, limit=150):
 LAST_ORDER_TS = None
 COOLDOWN_SECONDS = 30  # don't flood orders
 
+# Market close time (3:55 PM ET)
+MARKET_CLOSE_TIME = "15:55"
+
 def calc_macd_signal(macd_hist):
     if len(macd_hist) < 2:
         return 0
@@ -252,6 +255,21 @@ def on_trade_update(bar: Bar):
     # Evaluate and maybe trade
     evaluate_and_trade()
 
+def liquidate():
+    # Liquidate all SYMBOL positions
+    raw_positions = trading_client.get_all_positions()
+    for p in raw_positions:
+        if isinstance(p, Position) and p.symbol == SYMBOL:
+            qty = int(p.qty)
+            print(f"[LIQUIDATION] Selling {qty} shares of {SYMBOL}")
+            order_data = MarketOrderRequest(
+                symbol=SYMBOL,
+                qty=qty, 
+                side=OrderSide.SELL, 
+                time_in_force=TimeInForce.DAY
+            )
+            trading_client.submit_order(order_data)
+
 def run_stream():
     # seed historical bars so indicators have initial data
     seed_historical(SYMBOL, limit=150)
@@ -262,6 +280,16 @@ def run_stream():
     stream = StockDataStream(API_KEY, API_SECRET)
     try:
         async def handle_bar(bar):
+            import pytz
+            # Check if past market close time
+            et = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et).time()
+            close_time = datetime.strptime(MARKET_CLOSE_TIME, "%H:%M").time()
+            if now_et >= close_time:
+                print(f"[MARKET CLOSE] Past {MARKET_CLOSE_TIME} ET - liquidating and exiting")
+                liquidate()
+                exit(0)
+
             print(f'received bar: {bar}')
             if isinstance(bar, Bar):
                 on_trade_update(bar)
@@ -269,7 +297,6 @@ def run_stream():
                 print("[stream] received non-Bar data:", bar)
 
         stream.subscribe_bars(handle_bar, SYMBOL)
-        stream.subscribe_updated_bars(handle_bar, SYMBOL)
 
         print("[stream] starting stream for", SYMBOL)
         stream.run()  # blocking (runs forever)
