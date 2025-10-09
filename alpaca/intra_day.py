@@ -205,7 +205,7 @@ def evaluate_and_trade():
     has_position = SYMBOL in positions
 
     if buy_signal or sell_signal:
-        print(f"high: {high.iloc[-1]:.2f}, low: {low.iloc[-1]:.2f} [{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike} (signals rsi={rsi_signal} macd={macd_signal} kdj={kdj_signal} vol={volume_signal})")
+        print(f"[{bars.index[-1]}] rsi={rsi:.2f} macd_hist={macd_last:.6f} K={k_last:.2f} D={d_last:.2f} vol_spike={vol_spike} (signals rsi={rsi_signal} macd={macd_signal} kdj={kdj_signal} vol={volume_signal})")
     try:
         if buy_signal:
             # compute qty
@@ -225,8 +225,8 @@ def evaluate_and_trade():
                 return
             # Only allow closing if profitable (never exit at a loss)
             last_price = close.iloc[-1]
-            entry_price = float(getattr(pos, "avg_entry_price", 0) or 0)
-            if entry_price > 0 and last_price <= entry_price:
+            entry_price = float(pos.avg_entry_price)
+            if last_price < entry_price:
                 # print(f"[trade] SELL signal ignored: unrealized loss (last={last_price:.2f} entry={entry_price:.2f})")
                 return
             print(f"[trade] SELL signal. Closing position of {qty} {SYMBOL} at price ~{close.iloc[-1]}")
