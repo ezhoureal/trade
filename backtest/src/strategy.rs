@@ -242,7 +242,7 @@ impl PairStrategy {
                 if self.params.debug {
                     println!("  z={:.3}", z);
                 }
-                if z.abs() <= self.params.exit_z || z.abs() > self.params.entry_z * 2.0 {
+                if _pos.entry_z.signum() != z.signum() || z.abs() <= self.params.exit_z || z.abs() > self.params.entry_z * 2.0 {
                     to_close.push(pair.clone());
                 }
             }
