@@ -33,7 +33,12 @@ def _parse_args() -> argparse.Namespace:
 	p.add_argument(
 		"--days", "--look-back-period", dest="days", type=int, default=30, help="Look back trading days"
 	)
-	p.add_argument("--out", type=Path, default="recent.parquet", help="Output parquet path")
+	p.add_argument(
+		"--out",
+		type=Path,
+		default=Path(__file__).parent / "recent.parquet",
+		help="Output parquet path (default: same directory as this script)",
+	)
 	p.add_argument(
 		"--exchange",
 		default="shfe",
