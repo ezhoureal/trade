@@ -18,5 +18,6 @@ API/
 target/
 **/target/
 .DS_Store
+ctp/*.json
 
 *.con
