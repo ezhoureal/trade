@@ -56,6 +56,46 @@ The codebase uses **Rust for performance-critical components** and **Python for 
 **`alpaca/` and `ibkr/` modules:**
 - Alternative broker integrations for US markets (Alpaca) and Interactive Brokers
 
+## Prerequisites
+
+### System Dependencies
+
+**For building Rust code:**
+```bash
+# Install C compiler and build tools
+sudo apt update
+sudo apt install build-essential
+
+# Install libclang (required by ctp2rs for bindgen)
+sudo apt install libclang-dev
+```
+
+### CTP Live Trading Requirements
+
+To run the `ctp` binary for live trading, you need:
+
+**1. Market Data File:**
+- Required: `data/recent.parquet` (relative to project root)
+- Create using the Python data crawler:
+  ```bash
+  uv run python data/crawl.py --commodity ag --days 30 --out data/recent.parquet
+  ```
+
+**2. CTP Dynamic Libraries:**
+- Required for Linux: `ctp/api/lin64/thostmduserapi_se.so` and `ctp/api/lin64/thosttraderapi_se.so`
+- These are proprietary libraries from CTP/OpenCTP provider. [Download resource](http://www.openctp.cn/TTS-CTPAPI.html).
+- Different paths are used depending on environment:
+  - **Tts environment** (default): `ctp/api/lin64/`. v6.7.2 Already included in the repo.
+  - **Sim environment**: `../../../ctp-dyn/api/ctp/v6.7.2/...` (external path)
+
+**3. OpenCTP Credentials:**
+- Set environment variables:
+  ```bash
+  export OPENCTP_USER_ID="your_user_id"
+  export OPENCTP_PASS="your_password"
+  ```
+- Or pass via command line arguments (see live trading commands below)
+
 ## Common Commands
 
 ### Rust Development
