@@ -23,7 +23,7 @@ impl MdSpi for BaseMdSpi {
         // println!("[MD_SPI] on_front_connected - Connected to market data server");
         let mut req = CThostFtdcReqUserLoginField::default();
         req.BrokerID.assign_from_str("9999");
-        req.UserID.assign_from_str("");
+        req.UserID.assign_from_str(self.config.md_user_id.as_str());
         println!("[MD_SPI] Sending login request - BrokerID: 9999, UserID: {}", self.config.md_user_id);
         self.md_api.req_user_login(&mut req, 1);
         self.md_api.subscribe_market_data(&self.contracts);

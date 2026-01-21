@@ -86,7 +86,7 @@ fn create_config_for_environment(
             (
                 MdAccountConfig {
                     md_user_id: args.user_id.clone(),
-                    md_front_address: "tcp://211.95.60.131:33205".to_string(),
+                    md_front_address: "tcp://182.254.243.31:30011".to_string(),
                     md_dynlib_path,
                 },
                 TdAccountConfig {
