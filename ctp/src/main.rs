@@ -30,6 +30,7 @@ pub struct TdAccountConfig {
     pub td_user_id: String,
     pub td_password: String,
     pub td_app_id: String,
+    pub td_broker_id: String,
     pub td_auth_code: String,
     pub td_front_address: String,
     pub td_dynlib_path: PathBuf,
@@ -40,7 +41,7 @@ pub struct TdAccountConfig {
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// 选择运行环境
-    #[arg(short, long, value_enum, default_value_t = Environment::Tts)]
+    #[arg(short, long, value_enum, default_value_t = Environment::Sim)]
     environment: Environment,
 
     /// 用户ID
@@ -67,10 +68,8 @@ fn create_config_for_environment(
             // 仿真环境配置
             #[cfg(target_os = "macos")]
             let md_dynlib_path = base_path.join("api/v6.7.2_MacOS_20231016/thostmduserapi_se.framework/thostmduserapi_se");
-            #[cfg(all(target_os = "linux", not(feature = "ctp_v6_7_11")))]
-            let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.2/v6.7.2_20230913_api_traderapi_se_linux64/thostmduserapi_se.so");
-            #[cfg(all(target_os = "linux", feature = "ctp_v6_7_11"))]
-            let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.11/v6.7.11_20250617_api_traderapi_se_linux64/thostmduserapi_se.so");
+            #[cfg(all(target_os = "linux"))]
+            let md_dynlib_path = base_path.join("api/lin64/thostmduserapi_se.so");
 
             #[cfg(all(target_os = "windows", not(feature = "ctp_v6_7_11")))]
             let md_dynlib_path = base_path.join("../../../ctp-dyn/api/ctp/v6.7.2/v6.7.2_20230913_api_traderapi_se_win64/thostmduserapi_se.dll");
@@ -86,16 +85,17 @@ fn create_config_for_environment(
 
             (
                 MdAccountConfig {
-                    md_user_id: "247486".to_string(),
-                    md_front_address: "tcp://182.254.243.31:30011".to_string(), // SimNow 仿真环境
+                    md_user_id: args.user_id.clone(),
+                    md_front_address: "tcp://211.95.60.131:33205".to_string(),
                     md_dynlib_path,
                 },
                 TdAccountConfig {
-                    td_user_id: "14572".to_string(),
+                    td_user_id: args.user_id,
                     td_password: args.password,
-                    td_app_id: "simnow_client_test".to_string(),
-                    td_auth_code: "0000000000000000".to_string(),
-                    td_front_address: "tcp://121.37.90.193:20002".to_string(), // OPENCTP 仿真环境
+                    td_app_id: "".to_string(),
+                    td_auth_code: "".to_string(),
+                    td_broker_id: "9999".to_string(),
+                    td_front_address: "tcp://trading.openctp.cn:30002".to_string(), // OPENCTP 仿真环境
                     td_dynlib_path,
                     special_close_all: args.close_all
                 },
@@ -120,7 +120,7 @@ fn create_config_for_environment(
             (
                 MdAccountConfig {
                     md_user_id: args.user_id.clone(),
-                    md_front_address: "tcp://121.37.80.177:20004".to_string(), // TTS 7x24 环境
+                    md_front_address: "tcp://182.254.243.31:40011".to_string(), // TTS 7x24 环境
                     md_dynlib_path,
                 },
                 TdAccountConfig {
@@ -128,7 +128,8 @@ fn create_config_for_environment(
                     td_password: args.password,
                     td_app_id: "simnow_client_test".to_string(),
                     td_auth_code: "0000000000000000".to_string(),
-                    td_front_address: "tcp://121.37.80.177:20002".to_string(), // TTS 7x24 环境
+                    td_broker_id: "9999".to_string(),
+                    td_front_address: "tcp://182.254.243.31:40001".to_string(), // TTS 7x24 环境
                     td_dynlib_path,
                     special_close_all: args.close_all,
                 },
@@ -138,6 +139,7 @@ fn create_config_for_environment(
 }
 
 fn main() -> PolarsResult<()> {
+    env_logger::init();
     let args = Args::parse();
 
     println!("Running with environment: {:?}", args.environment);
@@ -159,6 +161,7 @@ fn main() -> PolarsResult<()> {
         .filter_map(|opt| opt.map(|s| s.to_string()))
         .collect();
 
+    println!("[MAIN] Spawning market data thread");
     let md_thread = thread::spawn(move || {
         run_md(config.0, contracts);
     });

@@ -420,10 +420,7 @@ async fn init_api(config: TdAccountConfig) -> LiveBroker {
         config.td_dynlib_path.to_string_lossy()
     );
 
-    #[cfg(not(feature = "ctp_v6_7_11"))]
-    let tdapi = TraderApi::create_api(&config.td_dynlib_path, "./td_");
-
-    #[cfg(feature = "ctp_v6_7_11")]
+    println!("[TD] Creating TraderApi instance");
     let tdapi = TraderApi::create_api(&config.td_dynlib_path, "./td_", true);
 
     let front_address = config.td_front_address.clone();
@@ -530,7 +527,11 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
     }
     strategy.set_expiry_dates(&broker.date, &broker.instrument_expiry);
 
+    let mut loop_count = 0;
     loop {
+        loop_count += 1;
+        println!("[TD] === Trading loop iteration {} ===", loop_count);
+
         check_position_consistency(&broker.positions, &strategy.get_positions());
 
         let contracts = snapshot_contracts();
