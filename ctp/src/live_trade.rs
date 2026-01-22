@@ -487,7 +487,7 @@ fn check_position_consistency(broker: &HashMap<String, Position>, strategy: &Spr
             PositionKind::Short => (b, a),
         };
         *total_long.entry(long_sym).or_insert(0) += pos.size_a;
-        *total_short.entry(short_sym).or_insert(0) += pos.size_a;
+        *total_short.entry(short_sym).or_insert(0) += pos.size_b;
     }
     for (sym, pos) in broker.iter() {
         let long = total_long.get(sym).cloned().unwrap_or(0);
