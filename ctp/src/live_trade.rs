@@ -1,6 +1,8 @@
-use chrono::{NaiveDate, ParseResult};
+use chrono::{Local, NaiveDate, ParseResult};
 use futures::StreamExt;
 use std::{any::Any, collections::HashMap, env, thread, time::Duration};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,6 +18,18 @@ use crate::{
     market_data::{get_price, get_volume, snapshot_contracts},
     TdAccountConfig,
 };
+
+fn log_trade(msg: &str) {
+    let log_msg = format!("[{}] {}\n", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
+    print!("{}", log_msg);
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("trade_orders.log")
+    {
+        let _ = file.write_all(log_msg.as_bytes());
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Position {
@@ -190,14 +204,20 @@ impl LiveBroker {
             return Some(0);
         }
         let price = get_price(symbol)?;
-        println!(
-            "PLACE ORDER: {:?}, qty = {}, open = {}, price = {}, cash = {}",
-            symbol,
-            qty,
-            offset_flag == THOST_FTDC_OF_Open,
-            price,
-            self.cash
-        );
+
+        let offset_str = match offset_flag {
+            THOST_FTDC_OF_Open => "Open",
+            THOST_FTDC_OF_Close => "Close",
+            THOST_FTDC_OF_CloseToday => "CloseToday",
+            THOST_FTDC_OF_CloseYesterday => "CloseYesterday",
+            _ => "Unknown",
+        };
+
+        log_trade(&format!(
+            "PLACE ORDER: symbol={}, qty={}, offset={}, price={:.2}, cash={:.2}",
+            symbol, qty, offset_str, price, self.cash
+        ));
+
         let mut order = self.order_default(symbol, qty);
         order.LimitPrice = price as f64;
         order.CombOffsetFlag[0] = offset_flag as i8;
@@ -228,19 +248,22 @@ impl LiveBroker {
                         _ => "其他状态",
                     };
 
-                    println!("报单成功回报 Order Return: BrokerID: {}, InvestorID: {}, ExchangeID: {}, OrderRef: {}, OrderStatus: {}, InstrumentID: {}", 
-                          broker_id, investor_id, exchange_id, order_ref, order_status, instrument_id);
+                    log_trade(&format!(
+                        "ORDER RETURN: OrderRef={}, Status={}, Instrument={}, BrokerID={}, InvestorID={}, ExchangeID={}",
+                        order_ref, order_status, instrument_id, broker_id, investor_id, exchange_id
+                    ));
+
                     if order_status == "已撤销" {
                         return None;
                     }
                 }
                 OnRspOrderInsert(p) => {
                     let rsp_info = p.rsp_info.unwrap();
-                    println!(
-                        "报单失败回报 OnRspOrderInsert {}: {}",
+                    log_trade(&format!(
+                        "ORDER FAILED: ErrorID={}, ErrorMsg={}",
                         rsp_info.ErrorID,
-                        rsp_info.ErrorMsg.to_string(),
-                    );
+                        rsp_info.ErrorMsg.to_string()
+                    ));
                     return None;
                 }
                 OnRtnTrade(p) => {
@@ -255,12 +278,15 @@ impl LiveBroker {
                     let price = trade.Price as f32;
                     let volume = trade.Volume;
 
-                    println!("成交回报 OnRtnTrade: OrderRef: {}, BrokerID: {}, InvestorID: {}, ExchangeID: {}, TradeID: {}, InstrumentID: {}, Price: {:.2}, Volume: {}",
-                          order_ref, broker_id, investor_id, exchange_id, trade_id, instrument_id, price, volume);
+                    log_trade(&format!(
+                        "TRADE EXECUTED: OrderRef={}, Instrument={}, Price={:.2}, Volume={}, TradeID={}, BrokerID={}, InvestorID={}, ExchangeID={}",
+                        order_ref, instrument_id, price, volume, trade_id, broker_id, investor_id, exchange_id
+                    ));
+
                     return Some(volume);
                 }
                 _ => {
-                    println!("其它回报");
+                    log_trade(&format!("OTHER EVENT: {:?}", spi_msg.type_id()));
                 }
             }
         }
