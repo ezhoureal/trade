@@ -126,6 +126,20 @@ def main():
 	args = _parse_args()
 	df = get_data(args.commodity, args.days)
 	args.out.parent.mkdir(parents=True, exist_ok=True)
+	# 核心修复：添加 Price -> Close
+	rename_map = {
+		'Price': 'Close',    # 针对你当前看到的原始列名
+		'收盘价': 'Close', 
+		'成交量': 'Volume',
+		'交易日': 'Date'
+	}
+
+	df = df.rename(columns=rename_map)
+
+	# 打印一下，确保这次成功了
+	print(f"Final columns: {df.columns.tolist()}")
+	df['Close'] = df['Close'].astype('float64')
+	df['Volume'] = df['Volume'].astype('float64')
 	df.to_parquet(args.out, index=False)
 	print(
 		f"Wrote {len(df)} rows across {df['Contract'].nunique()} contracts to {args.out} (dates {df['Date'].min()} .. {df['Date'].max()})"
