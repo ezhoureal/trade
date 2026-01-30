@@ -1,8 +1,9 @@
 use chrono::{Local, NaiveDate, ParseResult};
 use futures::StreamExt;
-use std::{any::Any, collections::HashMap, env, thread, time::Duration};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::{any::Any, collections::HashMap, env, thread, time::Duration};
+use tokio::time::timeout as tokio_timeout;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -156,11 +157,7 @@ impl LiveBroker {
         order.InstrumentID.assign_from_str(symbol);
         order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation as i8;
         order.OrderPriceType = THOST_FTDC_OPT_LimitPrice as i8;
-        if self.config.special_close_all {
-            order.OrderPriceType = THOST_FTDC_OPT_AnyPrice as i8;
-        }
         order.TimeCondition = THOST_FTDC_TC_GFD as i8;
-        order.VolumeCondition = THOST_FTDC_VC_MV as i8;
         order.VolumeTotalOriginal = qty.abs();
         order
             .OrderRef
@@ -171,6 +168,25 @@ impl LiveBroker {
             THOST_FTDC_D_Sell as i8
         };
         order
+    }
+
+    fn cancel_order(&mut self, order_ref: &str, instrument_id: &str) {
+        let mut cancel_req = CThostFtdcInputOrderActionField::default();
+        cancel_req
+            .InvestorID
+            .assign_from_str(&self.config.td_user_id);
+        cancel_req.UserID.assign_from_str(&self.config.td_user_id);
+        cancel_req.BrokerID.assign_from_str(&self.broker_id);
+        cancel_req.InstrumentID.assign_from_str(instrument_id);
+        cancel_req.OrderRef.assign_from_str(order_ref);
+        cancel_req.ActionFlag = THOST_FTDC_AF_Delete as i8;
+
+        self.request_id += 1;
+        let _ = self.api.req_order_action(&mut cancel_req, self.request_id);
+        log_trade(&format!(
+            "ORDER CANCEL REQUESTED: Instrument={}, OrderRef={}",
+            instrument_id, order_ref
+        ));
     }
 
     #[allow(dead_code)]
@@ -186,20 +202,51 @@ impl LiveBroker {
                 "closing position for {}: long_today = {}, long_yd = {}, short_today = {}, short_yd = {}",
                 symbol, pos.long_today, pos.long_yd, pos.short_today, pos.short_yd
             );
-            self.submit_order(symbol, -(pos.long_yd as i32), THOST_FTDC_OF_CloseYesterday)
-                .await?;
-            self.submit_order(&symbol, -(pos.long_today as i32), THOST_FTDC_OF_CloseToday)
-                .await?;
-            self.submit_order(&symbol, pos.short_yd as i32, THOST_FTDC_OF_CloseYesterday)
-                .await?;
-            self.submit_order(&symbol, pos.short_today as i32, THOST_FTDC_OF_CloseToday)
-                .await?;
+            self.submit_order(
+                symbol,
+                -(pos.long_yd as i32),
+                THOST_FTDC_OF_CloseYesterday,
+                THOST_FTDC_VC_CV,
+                THOST_FTDC_OPT_AnyPrice,
+            )
+            .await?;
+            self.submit_order(
+                &symbol,
+                -(pos.long_today as i32),
+                THOST_FTDC_OF_CloseToday,
+                THOST_FTDC_VC_CV,
+                THOST_FTDC_OPT_AnyPrice,
+            )
+            .await?;
+            self.submit_order(
+                &symbol,
+                pos.short_yd as i32,
+                THOST_FTDC_OF_CloseYesterday,
+                THOST_FTDC_VC_CV,
+                THOST_FTDC_OPT_AnyPrice,
+            )
+            .await?;
+            self.submit_order(
+                &symbol,
+                pos.short_today as i32,
+                THOST_FTDC_OF_CloseToday,
+                THOST_FTDC_VC_CV,
+                THOST_FTDC_OPT_AnyPrice,
+            )
+            .await?;
         }
         self.sync(&snapshot_contracts()).await?;
         Some(())
     }
 
-    async fn submit_order(&mut self, symbol: &str, qty: i32, offset_flag: u8) -> Option<i32> {
+    async fn submit_order(
+        &mut self,
+        symbol: &str,
+        qty: i32,
+        offset_flag: u8,
+        fill_type: u8,
+        price_type: u8,
+    ) -> Option<i32> {
         if qty == 0 {
             return Some(0);
         }
@@ -219,13 +266,35 @@ impl LiveBroker {
         ));
 
         let mut order = self.order_default(symbol, qty);
+        order.VolumeCondition = fill_type as i8;
+        order.OrderPriceType = price_type as i8;
         order.LimitPrice = price as f64;
         order.CombOffsetFlag[0] = offset_flag as i8;
 
         self.request_id += 1;
         self.api.req_order_insert(&mut order, self.request_id);
 
-        while let Some(spi_msg) = self.stream.next().await {
+        // Store order_ref for potential cancellation
+        let order_ref_str = self.request_id.to_string();
+        loop {
+            let timeout_dur = Duration::from_secs(60);
+            let spi_msg = match tokio_timeout(timeout_dur, self.stream.next()).await {
+                Ok(Some(msg)) => msg,
+                Ok(None) => {
+                    log_trade("ORDER TIMEOUT: Stream ended unexpectedly");
+                    self.cancel_order(&order_ref_str, &symbol);
+                    return None;
+                }
+                Err(_) => {
+                    log_trade(&format!(
+                        "ORDER TIMEOUT: No response within 1 hour for {}",
+                        symbol
+                    ));
+                    self.cancel_order(&order_ref_str, &symbol);
+                    return None;
+                }
+            };
+
             match spi_msg {
                 OnRtnOrder(p) => {
                     let order = p.order.unwrap();
@@ -290,7 +359,6 @@ impl LiveBroker {
                 }
             }
         }
-        Some(0)
     }
 
     async fn query_expiry_date(&mut self, instrument: &str) -> ParseResult<()> {
@@ -406,22 +474,67 @@ impl Broker for LiveBroker {
                 .entry(pair.0.clone())
                 .or_insert(Position::default()),
         )?;
-        let qty1 = self.submit_order(&pair.0, qty_a, flag).await?;
+        // For Leg 1: use LimitPrice with Minimum Volume
+        let qty1 = self
+            .submit_order(
+                &pair.0,
+                qty_a,
+                flag,
+                THOST_FTDC_VC_MV,
+                THOST_FTDC_OPT_LimitPrice,
+            )
+            .await?;
         if qty1 == 0 {
             return None;
         }
 
         // scale down qty_b according to the actual qty1 executed
         let scaled_qty_b = (qty_b as f64 * qty1 as f64 / qty_a.abs() as f64).round() as i32;
-        let qty2 = self.submit_order(&pair.1, scaled_qty_b, flag).await?;
-        if qty2 != qty1 {
-            println!(
-                "warning: filled qty not match for spread legs: {}, {}",
-                qty1, qty2
-            );
-            // maybe attempt to revert first order?
+
+        // Submit leg 2 with All-or-None (either fills completely or fails)
+        match self
+            .submit_order(
+                &pair.1,
+                scaled_qty_b,
+                flag,
+                THOST_FTDC_VC_AV,
+                THOST_FTDC_OPT_LimitPrice,
+            )
+            .await
+        {
+            Some(qty2) => {
+                if qty2 != scaled_qty_b {
+                    log_trade(&format!(
+                        "ERROR: LEG 2 PARTIAL FILL: symbol={}, requested qty={}, filled qty={}",
+                        pair.1, scaled_qty_b, qty2
+                    ));
+                }
+                // With All-or-None, qty2 always equals scaled_qty_b if Some
+                Some((qty1.abs() as u32, qty2.abs() as u32))
+            }
+            None => {
+                // Leg 2 failed - submit order to close leg 1 to avoid unhedged position
+                log_trade(&format!(
+                    "LEG 2 FAILED - Closing leg 1 to avoid unhedged position: symbol={}, qty={}",
+                    pair.0, qty1
+                ));
+
+                let close_flag = if open {
+                    THOST_FTDC_OF_CloseToday
+                } else {
+                    THOST_FTDC_OF_Open
+                };
+                self.submit_order(
+                    &pair.0,
+                    -qty_a,
+                    close_flag,
+                    THOST_FTDC_VC_AV,
+                    THOST_FTDC_OPT_AnyPrice,
+                )
+                .await;
+                None
+            }
         }
-        Some((qty1.abs() as u32, qty2.abs() as u32))
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -553,11 +666,7 @@ pub async fn run_td(config: TdAccountConfig, strategy: &mut PairStrategy) -> Res
     }
     strategy.set_expiry_dates(&broker.date, &broker.instrument_expiry);
 
-    let mut loop_count = 0;
     loop {
-        loop_count += 1;
-        println!("[TD] === Trading loop iteration {} ===", loop_count);
-
         check_position_consistency(&broker.positions, &strategy.get_positions());
 
         let contracts = snapshot_contracts();

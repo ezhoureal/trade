@@ -21,3 +21,4 @@ target/
 ctp/*.json
 
 *.con
+ctp/trade_orders.log

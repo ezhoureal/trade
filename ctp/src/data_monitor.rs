@@ -72,10 +72,10 @@ impl MdSpi for BaseMdSpi {
             let instrument = q.InstrumentID.to_string();
             update_quote(&instrument, q.LastPrice as f32, q.Volume as u32);
             // Uncomment for verbose market data logging:
-            println!(
-                "[MD_SPI] Market data: {} lastPrice = {}, volume={}",
-                instrument, q.LastPrice, q.Volume
-            );
+            // println!(
+            //     "[MD_SPI] Market data: {} lastPrice = {}, volume={}",
+            //     instrument, q.LastPrice, q.Volume
+            // );
         }
     }
 
