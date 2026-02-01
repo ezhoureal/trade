@@ -1,26 +1,57 @@
 # Chinese Stock Market Module
 
-This module provides a simulation interface for the Chinese stock market, allowing you to develop and test trading strategies against a mock version of Chinese exchanges like SSE (Shanghai) and SZSE (Shenzhen).
+This module provides a simulation interface for the Chinese stock market, allowing you to develop and test trading strategies against real-time market data.
 
 ## Features
 
-- **Mock Trading Interface**: Simulates the functionality of Chinese stock market APIs
-- **Account Management**: Track account balances, positions, and orders
-- **Market Data**: Access mock market data for Chinese stocks (SH/SZ codes)
-- **Order Placement**: Place buy/sell orders with various order types
-- **Position Tracking**: Monitor your portfolio holdings
+- **Real-time Data Integration**: Connect to real Chinese stock market data sources (Tushare, AkShare, Baostock)
+- **Simulated Execution Engine**: Test trading strategies without real money
+- **Accurate Market Simulation**: Includes slippage, transaction fees, bid/ask spreads
+- **Performance Tracking**: Monitor strategy performance with detailed metrics
+- **Risk Management**: Built-in validation for funds and positions
 
-## Supported Stocks
+## Architecture
 
-The simulation includes mock data for major Chinese stocks:
-- SSE: Shanghai Stock Exchange stocks (e.g., 600519.SH for Kweichow Moutai)
-- SZSE: Shenzhen Stock Exchange stocks (e.g., 000001.SZ for Ping An Bank)
+The module consists of:
+
+1. **Real-time Data Feed** (`RealTimeDataFeed`): Connects to external data sources
+2. **Simulated Execution Engine** (`SimulatedExecution`): Executes trades with realistic market conditions
+3. **Market Data Structures** (`MarketData`): Comprehensive stock information
+4. **Order Management**: Supports LIMIT, MARKET, and other order types
+
+## Data Sources Supported
+
+- **Tushare**: Professional financial data provider
+- **AkShare**: Free, open-source financial data toolkit
+- **Baostock**: Free stock data source
+- **Custom**: Connect to your own data provider
 
 ## Usage
 
+### Rust Binary
 ```bash
-cargo run --bin china_stock -- --api-key YOUR_API_KEY --secret-key YOUR_SECRET_KEY --environment sim
+cargo run -p china_stock -- --api-key YOUR_API_KEY --secret-key YOUR_SECRET_KEY --environment sim
 ```
+
+### Real-time Strategy Testing
+The module includes a Python script for real-time strategy testing:
+```bash
+python test_real_time_strategy.py
+```
+
+## Real-time Strategy Testing
+
+The `test_real_time_strategy.py` script demonstrates how to:
+
+1. **Connect to Real Data**: Fetch live market data from Chinese exchanges
+2. **Apply Trading Strategies**: Implement algorithmic trading logic
+3. **Execute Simulated Trades**: Test strategies with realistic market conditions
+4. **Monitor Performance**: Track P&L, returns, and other metrics
+
+### Example Strategy Included
+- Moving average crossover strategy
+- Risk management (position sizing, stop-loss)
+- Performance reporting
 
 ## Configuration
 
@@ -36,9 +67,32 @@ The module provides comprehensive stock data including:
 - Current price with percentage change (涨跌幅)
 - Price change amount (涨跌额)
 - OHLC (Open, High, Low, Close) prices
+- Bid/Ask prices and volumes
 - Volume and turnover data
 - Timestamp information
 
 ## Implementation Details
 
-This is a mock implementation designed for development and testing. It does not connect to real Chinese stock exchanges but provides the same interface structure you would find in a production system. To connect to real exchanges, you would need to implement the actual API calls to providers like Hithink RoyalFlush, WeBank, or other licensed Chinese financial data providers.
+This is a hybrid implementation that:
+- Provides a realistic simulation environment for development
+- Connects to real market data sources for accurate testing
+- Includes realistic market microstructure (slippage, fees, spreads)
+- Maintains the same interface you would find in a production system
+
+## Getting Started
+
+1. Install dependencies:
+   ```bash
+   pip install akshare  # For Python data integration
+   ```
+
+2. Configure your data source API keys (for paid services like Tushare)
+
+3. Run the real-time strategy test:
+   ```bash
+   python test_real_time_strategy.py
+   ```
+
+4. Develop your own strategies by modifying the example strategy function
+
+This approach allows you to test your trading strategies against real market conditions while maintaining a safe simulation environment.
