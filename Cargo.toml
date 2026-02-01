@@ -2,6 +2,7 @@
 members = [
     "backtest",
     "ctp",
+    "china_stock",
 ]
 resolver = "3"
 

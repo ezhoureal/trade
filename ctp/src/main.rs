@@ -126,8 +126,8 @@ fn create_config_for_environment(
                 TdAccountConfig {
                     td_user_id: args.user_id,
                     td_password: args.password,
-                    td_app_id: "simnow_client_test".to_string(),
-                    td_auth_code: "0000000000000000".to_string(),
+                    td_app_id: std::env::var("CTP_APP_ID").unwrap_or_else(|_| "your_app_id".to_string()),
+                    td_auth_code: std::env::var("CTP_AUTH_CODE").unwrap_or_else(|_| "your_auth_code".to_string()),
                     td_broker_id: "9999".to_string(),
                     td_front_address: "tcp://182.254.243.31:40001".to_string(), // TTS 7x24 环境
                     td_dynlib_path,
