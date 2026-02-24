@@ -14,7 +14,7 @@ impl default::Default for Commodity {
             name: "ag".into(),
             multiplier: 15.0,
             transaction_cost: 0.00005,
-            margin_ratio: 0.14,
+            margin_ratio: 0.38,
         }
     }
 }

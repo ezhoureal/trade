@@ -474,6 +474,21 @@ impl Broker for LiveBroker {
                 .entry(pair.0.clone())
                 .or_insert(Position::default()),
         )?;
+
+        // // Query account before leg 1 to see baseline margin
+        // self.request_id += 1;
+        // let mut qry_before = CThostFtdcQryTradingAccountField::default();
+        // qry_before.InvestorID.assign_from_str(&self.config.td_user_id);
+        // self.api.req_qry_trading_account(&mut qry_before, self.request_id);
+        // if let Some(TraderSpiEvent::OnRspQryTradingAccount(event)) = self.stream.next().await {
+        //     if let Some(acc) = event.trading_account {
+        //         log_trade(&format!(
+        //             "BEFORE LEG 1: balance: {}, available: {}, curr_margin: {}, frozen_margin: {}",
+        //             acc.Balance, acc.Available, acc.CurrMargin, acc.FrozenMargin
+        //         ));
+        //     }
+        // }
+
         // For Leg 1: use LimitPrice with Minimum Volume
         let qty1 = self
             .submit_order(
@@ -491,50 +506,35 @@ impl Broker for LiveBroker {
         // scale down qty_b according to the actual qty1 executed
         let scaled_qty_b = (qty_b as f64 * qty1 as f64 / qty_a.abs() as f64).round() as i32;
 
-        // Submit leg 2 with All-or-None (either fills completely or fails)
-        match self
+        // Query account after leg 1 to see actual margin state
+        // self.request_id += 1;
+        // let mut qry = CThostFtdcQryTradingAccountField::default();
+        // qry.InvestorID.assign_from_str(&self.config.td_user_id);
+        // self.api.req_qry_trading_account(&mut qry, self.request_id);
+        // if let Some(TraderSpiEvent::OnRspQryTradingAccount(event)) = self.stream.next().await {
+        //     if let Some(acc) = event.trading_account {
+        //         log_trade(&format!(
+        //             "AFTER LEG 1: balance: {}, available: {}, curr_margin: {}, frozen_margin: {}",
+        //             acc.Balance, acc.Available, acc.CurrMargin, acc.FrozenMargin
+        //         ));
+        //         self.cash = acc.Available as f32;
+        //         self.margin = acc.CurrMargin as f32;
+        //         self.equity = acc.Balance as f32;
+        //     }
+        // }
+
+        // Submit leg 2 with market price for immediate execution
+        let qty2 = self
             .submit_order(
                 &pair.1,
                 scaled_qty_b,
                 flag,
-                THOST_FTDC_VC_AV,
-                THOST_FTDC_OPT_LimitPrice,
+                THOST_FTDC_VC_CV,
+                THOST_FTDC_OPT_AnyPrice,
             )
-            .await
-        {
-            Some(qty2) => {
-                if qty2 != scaled_qty_b {
-                    log_trade(&format!(
-                        "ERROR: LEG 2 PARTIAL FILL: symbol={}, requested qty={}, filled qty={}",
-                        pair.1, scaled_qty_b, qty2
-                    ));
-                }
-                // With All-or-None, qty2 always equals scaled_qty_b if Some
-                Some((qty1.abs() as u32, qty2.abs() as u32))
-            }
-            None => {
-                // Leg 2 failed - submit order to close leg 1 to avoid unhedged position
-                log_trade(&format!(
-                    "LEG 2 FAILED - Closing leg 1 to avoid unhedged position: symbol={}, qty={}",
-                    pair.0, qty1
-                ));
+            .await?;
 
-                let close_flag = if open {
-                    THOST_FTDC_OF_CloseToday
-                } else {
-                    THOST_FTDC_OF_Open
-                };
-                self.submit_order(
-                    &pair.0,
-                    -qty_a,
-                    close_flag,
-                    THOST_FTDC_VC_AV,
-                    THOST_FTDC_OPT_AnyPrice,
-                )
-                .await;
-                None
-            }
-        }
+        Some((qty1.abs() as u32, qty2.abs() as u32))
     }
 
     fn get_status(&'_ self) -> AccountStatus {
@@ -634,15 +634,15 @@ fn check_position_consistency(broker: &HashMap<String, Position>, strategy: &Spr
         let broker_long = pos.long_today + pos.long_yd;
         let broker_short = pos.short_today + pos.short_yd;
         if long != broker_long {
-            println!(
-                "position mismatch for {}: strategy long = {}, broker long = {}",
-                sym, long, broker_long
+            eprintln!(
+                "⚠️  POSITION MISMATCH for {}: strategy long = {}, broker long = {} (broker has {} extra)",
+                sym, long, broker_long, broker_long - long
             );
         }
         if short != broker_short {
-            println!(
-                "position mismatch for {}: strategy short = {}, broker short = {}",
-                sym, short, broker_short
+            eprintln!(
+                "⚠️  POSITION MISMATCH for {}: strategy short = {}, broker short = {} (broker has {} extra)",
+                sym, short, broker_short, broker_short - short
             );
         }
     }

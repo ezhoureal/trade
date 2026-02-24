@@ -60,7 +60,8 @@ struct Args {
 fn create_config_for_environment(
     args: Args,
 ) -> (MdAccountConfig, TdAccountConfig) {
-    let base_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let base_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| std::env::current_dir().unwrap().to_string_lossy().to_string());
     let base_path = std::path::Path::new(&base_dir);
 
     match args.environment {
