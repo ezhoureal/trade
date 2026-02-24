@@ -635,14 +635,14 @@ fn check_position_consistency(broker: &HashMap<String, Position>, strategy: &Spr
         let broker_short = pos.short_today + pos.short_yd;
         if long != broker_long {
             eprintln!(
-                "⚠️  POSITION MISMATCH for {}: strategy long = {}, broker long = {} (broker has {} extra)",
-                sym, long, broker_long, broker_long - long
+                "⚠️  POSITION MISMATCH for {}: strategy long = {}, broker long = {}",
+                sym, long, broker_long
             );
         }
         if short != broker_short {
             eprintln!(
-                "⚠️  POSITION MISMATCH for {}: strategy short = {}, broker short = {} (broker has {} extra)",
-                sym, short, broker_short, broker_short - short
+                "⚠️  POSITION MISMATCH for {}: strategy short = {}, broker short = {}",
+                sym, short, broker_short
             );
         }
     }
